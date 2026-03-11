@@ -14,6 +14,9 @@ pub struct Deserializer<'de> {
     /// meaning the next struct should use those field names directly
     /// (source schema) rather than replacing with target struct fields.
     vec_schema_active: bool,
+    /// Cache the last resolved field alignment for repeated rows using the
+    /// same source schema and target field list.
+    last_struct_mode: Option<CachedStructMode>,
 }
 
 pub fn decode<'a, T: Deserialize<'a>>(s: &'a str) -> Result<T> {
@@ -23,6 +26,7 @@ pub fn decode<'a, T: Deserialize<'a>>(s: &'a str) -> Result<T> {
         schema_fields: None,
         field_index: 0,
         vec_schema_active: false,
+        last_struct_mode: None,
     };
     de.skip_whitespace_and_comments();
     let value = T::deserialize(&mut de)?;
@@ -141,13 +145,8 @@ impl<'de> Deserializer<'de> {
                     self.skip_balanced(b'{', b'}')?;
                 } else if self.pos < self.input.len() && self.input[self.pos] == b'[' {
                     self.skip_balanced(b'[', b']')?;
-                } else if self.pos + 3 < self.input.len()
-                    && &self.input[self.pos..self.pos + 3] == b"map"
-                {
-                    self.pos += 3;
-                    if self.pos < self.input.len() && self.input[self.pos] == b'[' {
-                        self.skip_balanced(b'[', b']')?;
-                    }
+                } else if self.pos < self.input.len() && self.input[self.pos] == b'<' {
+                    self.skip_balanced(b'<', b'>')?;
                 } else {
                     while self.pos < self.input.len() {
                         match self.input[self.pos] {
@@ -195,6 +194,7 @@ impl<'de> Deserializer<'de> {
         match self.input[self.pos] {
             b'(' => self.skip_balanced(b'(', b')'),
             b'[' => self.skip_balanced(b'[', b']'),
+            b'<' => self.skip_balanced(b'<', b'>'),
             b'"' => {
                 self.pos += 1;
                 while self.pos < self.input.len() {
@@ -212,7 +212,7 @@ impl<'de> Deserializer<'de> {
             _ => {
                 while self.pos < self.input.len() {
                     match self.input[self.pos] {
-                        b',' | b')' | b']' | b'}' => break,
+                        b',' | b')' | b']' | b'}' | b':' | b'>' => break,
                         _ => self.pos += 1,
                     }
                 }
@@ -251,7 +251,7 @@ impl<'de> Deserializer<'de> {
         let mut has_escape = false;
         while self.pos < self.input.len() {
             match self.input[self.pos] {
-                b',' | b')' | b']' => break,
+                b',' | b')' | b']' | b':' | b'>' => break,
                 b'\\' => {
                     has_escape = true;
                     self.pos += 2;
@@ -315,6 +315,9 @@ impl<'de> Deserializer<'de> {
                     b')' => result.push(')'),
                     b'[' => result.push('['),
                     b']' => result.push(']'),
+                    b'<' => result.push('<'),
+                    b'>' => result.push('>'),
+                    b':' => result.push(':'),
                     b'u' => {
                         if self.pos + 4 > self.input.len() {
                             return Err(Error::InvalidUnicodeEscape);
@@ -462,6 +465,7 @@ impl<'de> Deserializer<'de> {
             b'"' => ValueType::String,
             b'(' => ValueType::Tuple,
             b'[' => ValueType::Array,
+            b'<' => ValueType::MapData,
             b't' | b'f' => ValueType::Bool,
             b'-' => {
                 if self.pos + 1 < self.input.len() && self.input[self.pos + 1].is_ascii_digit() {
@@ -471,7 +475,7 @@ impl<'de> Deserializer<'de> {
                 }
             }
             b'0'..=b'9' => ValueType::Number,
-            b',' | b')' | b']' => ValueType::Null,
+            b',' | b')' | b']' | b'>' | b':' => ValueType::Null,
             _ => ValueType::String,
         }
     }
@@ -481,7 +485,7 @@ impl<'de> Deserializer<'de> {
         if self.pos >= self.input.len() {
             return true;
         }
-        matches!(self.input[self.pos], b',' | b')' | b']')
+        matches!(self.input[self.pos], b',' | b')' | b']' | b'>')
     }
 
     #[inline(always)]
@@ -497,11 +501,52 @@ impl<'de> Deserializer<'de> {
             }
         }
     }
+
+    #[inline]
+    fn struct_mode_cached(&mut self, target_fields: &'static [&'static str]) -> StructMode {
+        let Some(source_fields) = self.schema_fields.as_ref() else {
+            return StructMode::Exact;
+        };
+        let source_key = source_fields.cache_key();
+        let target_ptr = target_fields.as_ptr() as usize;
+        let target_len = target_fields.len();
+
+        if let Some(cached) = &self.last_struct_mode {
+            if cached.source_key == source_key
+                && cached.target_ptr == target_ptr
+                && cached.target_len == target_len
+            {
+                return cached.mode.clone();
+            }
+        }
+
+        let mode = self.struct_mode(target_fields);
+        self.last_struct_mode = Some(CachedStructMode {
+            source_key,
+            target_ptr,
+            target_len,
+            mode: mode.clone(),
+        });
+        mode
+    }
 }
 
 enum SchemaFields<'de> {
     Parsed(Vec<&'de str>),
     Static(&'static [&'static str]),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SchemaFieldsKey {
+    ptr: usize,
+    len: usize,
+}
+
+struct CachedStructMode {
+    source_key: SchemaFieldsKey,
+    target_ptr: usize,
+    target_len: usize,
+    mode: StructMode,
 }
 
 impl<'de> SchemaFields<'de> {
@@ -518,6 +563,20 @@ impl<'de> SchemaFields<'de> {
         match self {
             Self::Parsed(fields) => fields[index],
             Self::Static(fields) => unsafe { core::mem::transmute::<&str, &'de str>(fields[index]) },
+        }
+    }
+
+    #[inline(always)]
+    fn cache_key(&self) -> SchemaFieldsKey {
+        match self {
+            Self::Parsed(fields) => SchemaFieldsKey {
+                ptr: fields.as_ptr() as usize,
+                len: fields.len(),
+            },
+            Self::Static(fields) => SchemaFieldsKey {
+                ptr: fields.as_ptr() as usize,
+                len: fields.len(),
+            },
         }
     }
 
@@ -541,18 +600,20 @@ impl<'de> SchemaFields<'de> {
     }
 
     #[inline]
-    fn missing_target_fields(&self, target_fields: &'static [&'static str]) -> Vec<&'static str> {
+    fn missing_target_fields(&self, target_fields: &'static [&'static str]) -> Box<[&'static str]> {
         target_fields
             .iter()
             .copied()
             .filter(|target| !self.contains_name(target))
-            .collect()
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
     }
 }
 
+#[derive(Clone)]
 enum StructMode {
     Exact,
-    WithDefaults { missing_fields: Vec<&'static str> },
+    WithDefaults { missing_fields: Box<[&'static str]> },
 }
 
 /// Lightweight Cow-like enum to avoid std::borrow::Cow overhead
@@ -579,6 +640,7 @@ enum ValueType {
     String,
     Array,
     Tuple,
+    MapData,
 }
 
 fn unescape_plain(s: &str) -> Result<String> {
@@ -597,6 +659,9 @@ fn unescape_plain(s: &str) -> Result<String> {
                 b')' => result.push(')'),
                 b'[' => result.push('['),
                 b']' => result.push(']'),
+                b'<' => result.push('<'),
+                b'>' => result.push('>'),
+                b':' => result.push(':'),
                 b'"' => result.push('"'),
                 b'\\' => result.push('\\'),
                 b'n' => result.push('\n'),
@@ -640,7 +705,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
                     && (self.pos + 4 >= self.input.len()
                         || matches!(
                             self.input[self.pos + 4],
-                            b',' | b')' | b']' | b' ' | b'\t' | b'\n' | b'\r'
+                            b',' | b')' | b']' | b'>' | b':' | b' ' | b'\t' | b'\n' | b'\r'
                         ));
                 let is_false = !is_true
                     && self.pos + 5 <= self.input.len()
@@ -648,7 +713,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
                     && (self.pos + 5 >= self.input.len()
                         || matches!(
                             self.input[self.pos + 5],
-                            b',' | b')' | b']' | b' ' | b'\t' | b'\n' | b'\r'
+                            b',' | b')' | b']' | b'>' | b':' | b' ' | b'\t' | b'\n' | b'\r'
                         ));
                 if is_true || is_false {
                     self.deserialize_bool(visitor)
@@ -697,6 +762,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
             }
             ValueType::Array => self.deserialize_seq(visitor),
             ValueType::Tuple => self.deserialize_map(visitor),
+            ValueType::MapData => self.deserialize_map(visitor),
         }
     }
 
@@ -707,7 +773,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
             if self.pos + 4 >= self.input.len()
                 || matches!(
                     self.input[self.pos + 4],
-                    b',' | b')' | b']' | b' ' | b'\t' | b'\n' | b'\r'
+                    b',' | b')' | b']' | b'>' | b':' | b' ' | b'\t' | b'\n' | b'\r'
                 )
             {
                 self.pos += 4;
@@ -718,7 +784,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
             if self.pos + 5 >= self.input.len()
                 || matches!(
                     self.input[self.pos + 5],
-                    b',' | b')' | b']' | b' ' | b'\t' | b'\n' | b'\r'
+                    b',' | b')' | b']' | b'>' | b':' | b' ' | b'\t' | b'\n' | b'\r'
                 )
             {
                 self.pos += 5;
@@ -961,14 +1027,14 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         self.skip_layout();
 
         if self.schema_fields.is_some() {
-            if self.peek_byte()? == b'[' {
+            if self.peek_byte()? == b'<' {
                 self.pos += 1;
                 let value = visitor.visit_map(AsonMapAccess {
                     de: self,
                     first: true,
                 })?;
                 self.skip_layout();
-                if self.pos < self.input.len() && self.input[self.pos] == b']' {
+                if self.pos < self.input.len() && self.input[self.pos] == b'>' {
                     self.pos += 1;
                 }
                 return Ok(value);
@@ -987,14 +1053,14 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
                 self.pos += 1;
             }
             Ok(value)
-        } else if self.peek_byte()? == b'[' {
+        } else if self.peek_byte()? == b'<' {
             self.pos += 1;
             let value = visitor.visit_map(AsonMapAccess {
                 de: self,
                 first: true,
             })?;
             self.skip_layout();
-            if self.pos < self.input.len() && self.input[self.pos] == b']' {
+            if self.pos < self.input.len() && self.input[self.pos] == b'>' {
                 self.pos += 1;
             }
             Ok(value)
@@ -1050,7 +1116,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
                     self.schema_fields = Some(SchemaFields::Static(fields));
                 }
 
-                let mode = self.struct_mode(fields);
+                let mode = self.struct_mode_cached(fields);
                 let value = match mode {
                     StructMode::Exact => visitor.visit_map(AsonStructAccess { de: self, field_index: 0 })?,
                     StructMode::WithDefaults { missing_fields } => visitor.visit_map(
@@ -1075,7 +1141,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
             let parent_schema = self.schema_fields.take();
             self.schema_fields = Some(SchemaFields::Static(fields));
             self.field_index = 0;
-            let mode = self.struct_mode(fields);
+            let mode = self.struct_mode_cached(fields);
             let value = match mode {
                 StructMode::Exact => visitor.visit_map(AsonStructAccess { de: self, field_index: 0 })?,
                 StructMode::WithDefaults { missing_fields } => visitor.visit_map(
@@ -1102,7 +1168,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
                     return Err(Error::ExpectedOpenParen);
                 }
                 self.field_index = 0;
-                let mode = self.struct_mode(fields);
+                let mode = self.struct_mode_cached(fields);
                 let value = match mode {
                     StructMode::Exact => visitor.visit_map(AsonStructAccess { de: self, field_index: 0 })?,
                     StructMode::WithDefaults { missing_fields } => visitor.visit_map(
@@ -1125,7 +1191,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
                 self.pos += 1;
                 self.schema_fields = Some(SchemaFields::Static(fields));
                 self.field_index = 0;
-                let mode = self.struct_mode(fields);
+                let mode = self.struct_mode_cached(fields);
                 let value = match mode {
                     StructMode::Exact => visitor.visit_map(AsonStructAccess { de: self, field_index: 0 })?,
                     StructMode::WithDefaults { missing_fields } => visitor.visit_map(
@@ -1344,7 +1410,7 @@ struct AsonStructAccessWithDefaults<'a, 'de: 'a> {
     de: &'a mut Deserializer<'de>,
     field_index: usize,
     default_index: usize,
-    missing_fields: Vec<&'static str>,
+    missing_fields: Box<[&'static str]>,
 }
 
 impl<'a, 'de> MapAccess<'de> for AsonStructAccessWithDefaults<'a, 'de> {
@@ -1416,7 +1482,7 @@ impl<'a, 'de> MapAccess<'de> for AsonStructAccessWithDefaults<'a, 'de> {
     }
 }
 
-// --- Map Access for [(k,v)] ---
+// --- Map Access for <k:v> ---
 struct AsonMapAccess<'a, 'de: 'a> {
     de: &'a mut Deserializer<'de>,
     first: bool,
@@ -1431,14 +1497,14 @@ impl<'a, 'de> MapAccess<'de> for AsonMapAccess<'a, 'de> {
         if self.de.pos >= self.de.input.len() {
             return Ok(None);
         }
-        if self.de.input[self.de.pos] == b']' {
+        if self.de.input[self.de.pos] == b'>' {
             return Ok(None);
         }
         if !self.first {
             if self.de.input[self.de.pos] == b',' {
                 self.de.pos += 1;
                 self.de.skip_layout();
-                if self.de.pos < self.de.input.len() && self.de.input[self.de.pos] == b']' {
+                if self.de.pos < self.de.input.len() && self.de.input[self.de.pos] == b'>' {
                     return Ok(None);
                 }
             } else {
@@ -1447,26 +1513,18 @@ impl<'a, 'de> MapAccess<'de> for AsonMapAccess<'a, 'de> {
         }
         self.first = false;
 
+        let key = seed.deserialize(&mut *self.de)?;
         self.de.skip_layout();
-        if self.de.next_byte()? != b'(' {
-            return Err(Error::ExpectedOpenParen);
+        if self.de.next_byte()? != b':' {
+            return Err(Error::ExpectedColon);
         }
-        self.de.skip_layout();
-        seed.deserialize(&mut *self.de).map(Some)
+        Ok(Some(key))
     }
 
     #[inline]
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value> {
         self.de.skip_layout();
-        if self.de.pos < self.de.input.len() && self.de.input[self.de.pos] == b',' {
-            self.de.pos += 1;
-        }
-        self.de.skip_layout();
         let value = seed.deserialize(&mut *self.de)?;
-        self.de.skip_layout();
-        if self.de.pos < self.de.input.len() && self.de.input[self.de.pos] == b')' {
-            self.de.pos += 1;
-        }
         Ok(value)
     }
 }
@@ -1532,7 +1590,7 @@ impl<'a, 'de> de::VariantAccess<'de> for AsonEnumAccess<'a, 'de> {
         let parent_field_index = self.de.field_index;
         self.de.schema_fields = Some(SchemaFields::Static(fields));
         self.de.field_index = 0;
-        let mode = self.de.struct_mode(fields);
+        let mode = self.de.struct_mode_cached(fields);
         let value = match mode {
             StructMode::Exact => visitor.visit_map(AsonStructAccess { de: self.de, field_index: 0 })?,
             StructMode::WithDefaults { missing_fields } => visitor.visit_map(

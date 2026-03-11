@@ -457,7 +457,7 @@ impl<'a> ser::Serializer for &'a mut Encoder {
         if self.current_type_hint.is_none() && self.typed {
             self.current_type_hint = Some("map");
         }
-        self.buf.push(b'[');
+        self.buf.push(b'<');
         Ok(MapEncoder {
             ser: self,
             first: true,
@@ -468,7 +468,6 @@ impl<'a> ser::Serializer for &'a mut Encoder {
         let is_top = !self.in_tuple;
         let capture_for_seq = !is_top && self.in_top_seq && self.top_seq_fields.is_none();
         if is_top {
-            let data_start = self.buf.len();
             self.buf.push(b'(');
             self.in_tuple = true;
             Ok(StructEncoder {
@@ -479,7 +478,6 @@ impl<'a> ser::Serializer for &'a mut Encoder {
                 is_top: true,
                 capture_for_seq: false,
                 first: true,
-                data_start,
             })
         } else {
             self.push_separator();
@@ -492,7 +490,6 @@ impl<'a> ser::Serializer for &'a mut Encoder {
                 is_top: false,
                 capture_for_seq,
                 first: true,
-                data_start: 0,
             })
         }
     }
@@ -516,7 +513,6 @@ impl<'a> ser::Serializer for &'a mut Encoder {
             is_top: false,
             capture_for_seq: false,
             first: true,
-            data_start: 0,
         })
     }
 }
@@ -549,14 +545,16 @@ impl<'a> ser::SerializeSeq for SeqEncoder<'a> {
     fn end(self) -> Result<()> {
         if self.is_top_seq {
             if let Some(ref fields) = self.ser.top_seq_fields {
-                // Struct elements: prepend [{schema}]:
-                let data = self.ser.buf.split_off(self.ser.top_seq_data_start);
-                self.ser.buf.extend_from_slice(b"[{");
+                // Struct elements: build header once, then append the already
+                // serialized data buffer in a single pass.
+                let mut data = core::mem::take(&mut self.ser.buf);
+                let mut out = Vec::with_capacity(data.len() + fields.len() * 16 + 8);
+                out.extend_from_slice(b"[{");
                 for (i, f) in fields.iter().enumerate() {
                     if i > 0 {
-                        self.ser.buf.push(b',');
+                        out.push(b',');
                     }
-                    self.ser.buf.extend_from_slice(f.as_bytes());
+                    out.extend_from_slice(f.as_bytes());
                     // Nested schema takes priority over type hint
                     let has_nested = self
                         .ser
@@ -565,25 +563,28 @@ impl<'a> ser::SerializeSeq for SeqEncoder<'a> {
                         .and_then(|schemas| schemas.get(i))
                         .and_then(|s| s.as_ref());
                     if let Some(schema) = has_nested {
-                        self.ser.buf.push(b':');
-                        self.ser.buf.extend_from_slice(schema);
+                        out.push(b':');
+                        out.extend_from_slice(schema);
                     } else if self.ser.typed {
                         if let Some(ref field_types) = self.ser.top_seq_field_types {
                             if let Some(Some(type_hint)) = field_types.get(i) {
-                                self.ser.buf.push(b':');
-                                self.ser.buf.extend_from_slice(type_hint.as_bytes());
+                                out.push(b':');
+                                out.extend_from_slice(type_hint.as_bytes());
                             }
                         }
                     }
                 }
-                self.ser.buf.extend_from_slice(b"}]:");
-                self.ser.buf.extend_from_slice(&data);
+                out.extend_from_slice(b"}]:");
+                out.append(&mut data);
+                self.ser.buf = out;
             } else {
                 // Non-struct elements (primitive Vec): wrap in [...]
-                let data = self.ser.buf.split_off(self.ser.top_seq_data_start);
-                self.ser.buf.push(b'[');
-                self.ser.buf.extend_from_slice(&data);
-                self.ser.buf.push(b']');
+                let mut data = core::mem::take(&mut self.ser.buf);
+                let mut out = Vec::with_capacity(data.len() + 2);
+                out.push(b'[');
+                out.append(&mut data);
+                out.push(b']');
+                self.ser.buf = out;
             }
             self.ser.in_top_seq = false;
         } else {
@@ -688,23 +689,23 @@ impl<'a> ser::SerializeMap for MapEncoder<'a> {
     fn serialize_key<T: ?Sized + Serialize>(&mut self, key: &T) -> Result<()> {
         if !self.first {
             self.ser.buf.push(b',');
+            self.ser.buf.push(b' ');
         }
         self.first = false;
-        self.ser.buf.push(b'(');
         self.ser.first = true;
-        key.serialize(&mut *self.ser)
+        key.serialize(&mut *self.ser)?;
+        self.ser.buf.push(b':');
+        Ok(())
     }
 
     fn serialize_value<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<()> {
-        self.ser.buf.push(b',');
         self.ser.first = true;
         value.serialize(&mut *self.ser)?;
-        self.ser.buf.push(b')');
         Ok(())
     }
 
     fn end(self) -> Result<()> {
-        self.ser.buf.push(b']');
+        self.ser.buf.push(b'>');
         self.ser.first = false;
         Ok(())
     }
@@ -724,7 +725,6 @@ pub struct StructEncoder<'a> {
     is_top: bool,
     capture_for_seq: bool,
     first: bool,
-    data_start: usize,
 }
 
 impl<'a> ser::SerializeStruct for StructEncoder<'a> {
@@ -764,27 +764,29 @@ impl<'a> ser::SerializeStruct for StructEncoder<'a> {
     fn end(self) -> Result<()> {
         if self.is_top {
             self.ser.buf.push(b')');
-            // Split data, prepend schema, re-append
-            let data = self.ser.buf.split_off(self.data_start);
-            self.ser.buf.push(b'{');
+            // Build top-level header once, then append the tuple payload.
+            let mut data = core::mem::take(&mut self.ser.buf);
+            let mut out = Vec::with_capacity(data.len() + self.fields.len() * 16 + 4);
+            out.push(b'{');
             for (i, f) in self.fields.iter().enumerate() {
                 if i > 0 {
-                    self.ser.buf.push(b',');
+                    out.push(b',');
                 }
-                self.ser.buf.extend_from_slice(f.as_bytes());
+                out.extend_from_slice(f.as_bytes());
                 // Nested schema takes priority over type hint
                 if let Some(Some(schema)) = self.field_schemas.get(i) {
-                    self.ser.buf.push(b':');
-                    self.ser.buf.extend_from_slice(schema);
+                    out.push(b':');
+                    out.extend_from_slice(schema);
                 } else if self.ser.typed {
                     if let Some(type_hint) = self.field_types.get(i).and_then(|t| *t) {
-                        self.ser.buf.push(b':');
-                        self.ser.buf.extend_from_slice(type_hint.as_bytes());
+                        out.push(b':');
+                        out.extend_from_slice(type_hint.as_bytes());
                     }
                 }
             }
-            self.ser.buf.extend_from_slice(b"}:");
-            self.ser.buf.extend_from_slice(&data);
+            out.extend_from_slice(b"}:");
+            out.append(&mut data);
+            self.ser.buf = out;
         } else {
             self.ser.buf.push(b')');
             self.ser.first = false;

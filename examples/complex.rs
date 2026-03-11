@@ -257,7 +257,7 @@ fn main() {
     // 3. Map/Dict field (existing)
     // -----------------------------------------------------------------------
     println!("\n3. Map/Dict field:");
-    let input = "{name,attrs}:(Alice,[(age,30),(score,95)])";
+    let input = "{name,attrs}:(Alice,<age:30,score:95>)";
     let item: WithMap = decode(input).unwrap();
     println!("   {:?}", item);
 

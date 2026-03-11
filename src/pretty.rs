@@ -69,8 +69,8 @@ fn build_match_table(src: &[u8]) -> Vec<i32> {
         }
         match src[i] {
             b'"' => in_quote = true,
-            b'{' | b'(' | b'[' => stack.push(i),
-            b'}' | b')' | b']' => {
+            b'{' | b'(' | b'[' | b'<' => stack.push(i),
+            b'}' | b')' | b']' | b'>' => {
                 if let Some(j) = stack.pop() {
                     mat[j] = i as i32;
                     mat[i] = j as i32;
@@ -165,7 +165,7 @@ impl<'a> PrettyFmt<'a> {
             return;
         }
         let ch = self.src[self.pos];
-        if ch != b'{' && ch != b'(' && ch != b'[' {
+        if ch != b'{' && ch != b'(' && ch != b'[' && ch != b'<' {
             self.write_value();
             return;
         }
@@ -242,7 +242,7 @@ impl<'a> PrettyFmt<'a> {
     fn write_element(&mut self, boundary: usize) {
         while self.pos < boundary && self.src[self.pos] != b',' {
             let ch = self.src[self.pos];
-            if ch == b'{' || ch == b'(' || ch == b'[' {
+            if ch == b'{' || ch == b'(' || ch == b'[' || ch == b'<' {
                 self.write_group();
             } else if ch == b'"' {
                 self.write_quoted();
@@ -256,7 +256,7 @@ impl<'a> PrettyFmt<'a> {
     fn write_value(&mut self) {
         while self.pos < self.src.len() {
             let ch = self.src[self.pos];
-            if ch == b',' || ch == b')' || ch == b'}' || ch == b']' {
+            if ch == b',' || ch == b')' || ch == b'}' || ch == b']' || ch == b'>' {
                 break;
             }
             if ch == b'"' {
@@ -306,11 +306,11 @@ impl<'a> PrettyFmt<'a> {
                     in_quote = true;
                     self.out.push(ch);
                 }
-                b'{' | b'(' | b'[' => {
+                b'{' | b'(' | b'[' | b'<' => {
                     depth += 1;
                     self.out.push(ch);
                 }
-                b'}' | b')' | b']' => {
+                b'}' | b')' | b']' | b'>' => {
                     depth -= 1;
                     self.out.push(ch);
                 }

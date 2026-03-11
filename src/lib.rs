@@ -200,7 +200,7 @@ mod tests {
             name: String,
             attrs: HashMap<String, i64>,
         }
-        let input = "{name,attrs}:(Alice,[(age,30),(score,95)])";
+        let input = "{name,attrs}:(Alice,<age:30,score:95>)";
         let item: Item = decode(input).unwrap();
         assert_eq!(item.attrs["age"], 30);
         assert_eq!(item.attrs["score"], 95);
@@ -284,8 +284,8 @@ mod tests {
             attrs: HashMap<String, i64>,
         }
 
-        let typed = "{name:str,attrs:map[str,int]}:(server,[(port,8080),(timeout,30)])";
-        let untyped = "{name,attrs}:(server,[(port,8080),(timeout,30)])";
+        let typed = "{name:str,attrs:map}:(server,<port:8080,timeout:30>)";
+        let untyped = "{name,attrs}:(server,<port:8080,timeout:30>)";
         let c1: Config = decode(typed).unwrap();
         let c2: Config = decode(untyped).unwrap();
         assert_eq!(c1, c2);
