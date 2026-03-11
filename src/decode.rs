@@ -972,10 +972,12 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
                     self.schema_fields = Some(nested_fields);
                 }
 
-                let value = visitor.visit_map(AsonStructAccess {
-                    de: self,
-                    field_index: 0,
-                })?;
+                let needs_defaults = match &self.schema_fields { Some(sf) => sf.len() < fields.len() || !sf.iter().zip(fields.iter()).all(|(a, b)| a == b), None => false };
+                let value = if needs_defaults {
+                    visitor.visit_map(AsonStructAccessWithDefaults { de: self, field_index: 0, default_index: 0, target_fields: fields })?
+                } else {
+                    visitor.visit_map(AsonStructAccess { de: self, field_index: 0 })?
+                };
                 self.skip_remaining_tuple_values()?;
                 self.skip_whitespace_and_comments();
                 if self.pos < self.input.len() && self.input[self.pos] == b')' {
@@ -991,10 +993,12 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
                 .collect();
             self.schema_fields = Some(nested_fields);
             self.field_index = 0;
-            let value = visitor.visit_map(AsonStructAccess {
-                de: self,
-                field_index: 0,
-            })?;
+            let needs_defaults = match &self.schema_fields { Some(sf) => sf.len() < fields.len() || !sf.iter().zip(fields.iter()).all(|(a, b)| a == b), None => false };
+            let value = if needs_defaults {
+                visitor.visit_map(AsonStructAccessWithDefaults { de: self, field_index: 0, default_index: 0, target_fields: fields })?
+            } else {
+                visitor.visit_map(AsonStructAccess { de: self, field_index: 0 })?
+            };
             self.schema_fields = parent_schema;
             Ok(value)
         } else {
@@ -1010,10 +1014,12 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
                     return Err(Error::ExpectedOpenParen);
                 }
                 self.field_index = 0;
-                let value = visitor.visit_map(AsonStructAccess {
-                    de: self,
-                    field_index: 0,
-                })?;
+                let needs_defaults = match &self.schema_fields { Some(sf) => sf.len() < fields.len() || !sf.iter().zip(fields.iter()).all(|(a, b)| a == b), None => false };
+                let value = if needs_defaults {
+                    visitor.visit_map(AsonStructAccessWithDefaults { de: self, field_index: 0, default_index: 0, target_fields: fields })?
+                } else {
+                    visitor.visit_map(AsonStructAccess { de: self, field_index: 0 })?
+                };
                 self.skip_remaining_tuple_values()?;
                 self.skip_whitespace_and_comments();
                 if self.pos < self.input.len() && self.input[self.pos] == b')' {
@@ -1029,10 +1035,12 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
                     .collect();
                 self.schema_fields = Some(static_fields);
                 self.field_index = 0;
-                let value = visitor.visit_map(AsonStructAccess {
-                    de: self,
-                    field_index: 0,
-                })?;
+                let needs_defaults = match &self.schema_fields { Some(sf) => sf.len() < fields.len() || !sf.iter().zip(fields.iter()).all(|(a, b)| a == b), None => false };
+                let value = if needs_defaults {
+                    visitor.visit_map(AsonStructAccessWithDefaults { de: self, field_index: 0, default_index: 0, target_fields: fields })?
+                } else {
+                    visitor.visit_map(AsonStructAccess { de: self, field_index: 0 })?
+                };
                 self.skip_remaining_tuple_values()?;
                 self.skip_whitespace_and_comments();
                 if self.pos < self.input.len() && self.input[self.pos] == b')' {
@@ -1179,7 +1187,7 @@ impl<'a, 'de> SeqAccess<'de> for AsonTupleAccess<'a, 'de> {
     }
 }
 
-// --- Struct (positional) Access ---
+// --- Struct (positional) Access (Fast Path) ---
 struct AsonStructAccess<'a, 'de: 'a> {
     de: &'a mut Deserializer<'de>,
     field_index: usize,
@@ -1188,7 +1196,7 @@ struct AsonStructAccess<'a, 'de: 'a> {
 impl<'a, 'de> MapAccess<'de> for AsonStructAccess<'a, 'de> {
     type Error = Error;
 
-    #[inline]
+    #[inline(always)]
     fn next_key_seed<K: DeserializeSeed<'de>>(&mut self, seed: K) -> Result<Option<K::Value>> {
         self.de.skip_whitespace_and_comments();
         if self.de.pos >= self.de.input.len() {
@@ -1229,9 +1237,94 @@ impl<'a, 'de> MapAccess<'de> for AsonStructAccess<'a, 'de> {
             .map(Some)
     }
 
-    #[inline]
+    #[inline(always)]
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value> {
         seed.deserialize(&mut *self.de)
+    }
+}
+
+// --- Struct (positional) Access (With Defaults) ---
+struct AsonStructAccessWithDefaults<'a, 'de: 'a> {
+    de: &'a mut Deserializer<'de>,
+    field_index: usize,
+    default_index: usize,
+    target_fields: &'static [&'static str],
+}
+
+impl<'a, 'de> MapAccess<'de> for AsonStructAccessWithDefaults<'a, 'de> {
+    type Error = Error;
+
+    #[inline(always)]
+    fn next_key_seed<K: DeserializeSeed<'de>>(&mut self, seed: K) -> Result<Option<K::Value>> {
+        self.de.skip_whitespace_and_comments();
+        if self.de.pos >= self.de.input.len() {
+            return Ok(None);
+        }
+        
+        // Phase 2: if we are at ')', we have exhausted the source tuple
+        if self.de.input[self.de.pos] == b')' {
+            if self.target_fields.is_empty() {
+                return Ok(None);
+            }
+            let source_fields: &[&str] = self.de.schema_fields.as_deref().unwrap_or(&[]);
+            loop {
+                if self.default_index >= self.target_fields.len() {
+                    return Ok(None);
+                }
+                let tname = self.target_fields[self.default_index];
+                self.default_index += 1;
+                
+                let mut found = false;
+                for sf in source_fields {
+                    if *sf == tname { found = true; break; }
+                }
+                
+                if !found {
+                    let name_str: &'de str = unsafe { core::mem::transmute::<&str, &'de str>(tname) };
+                    return seed.deserialize(FieldNameDeserializer { name: name_str }).map(Some);
+                }
+            }
+        }
+
+        // Phase 1: parse fields from source
+        let field_count = match &self.de.schema_fields {
+            Some(f) => f.len(),
+            None => return Ok(None),
+        };
+
+        if self.field_index >= field_count {
+            return Ok(None);
+        }
+
+        if self.field_index > 0 {
+            if self.de.pos < self.de.input.len() && self.de.input[self.de.pos] == b',' {
+                self.de.pos += 1;
+                self.de.skip_whitespace_and_comments();
+                if self.de.pos < self.de.input.len() && self.de.input[self.de.pos] == b')' {
+                    return self.next_key_seed(seed);
+                }
+            } else if self.de.input[self.de.pos] != b')' {
+                return Ok(None);
+            } else {
+                return Ok(None);
+            }
+        }
+
+        let field_name = self.de.schema_fields.as_ref().unwrap()[self.field_index];
+        self.field_index += 1;
+        self.de.field_index = self.field_index;
+
+        seed.deserialize(FieldNameDeserializer { name: field_name }).map(Some)
+    }
+
+    #[inline(always)]
+    fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value> {
+        self.de.skip_whitespace_and_comments();
+        if self.de.pos < self.de.input.len() && self.de.input[self.de.pos] == b')' {
+            seed.deserialize(DefaultValueDeserializer)
+        } else {
+            seed.deserialize(&mut *self.de)
+        }
     }
 }
 
@@ -1355,10 +1448,12 @@ impl<'a, 'de> de::VariantAccess<'de> for AsonEnumAccess<'a, 'de> {
             .collect();
         self.de.schema_fields = Some(static_fields);
         self.de.field_index = 0;
-        let value = visitor.visit_map(AsonStructAccess {
-            de: self.de,
-            field_index: 0,
-        })?;
+        let needs_defaults = match &self.de.schema_fields { Some(sf) => sf.len() < fields.len() || !sf.iter().zip(fields.iter()).all(|(a, b)| a == b), None => false };
+        let value = if needs_defaults {
+            visitor.visit_map(AsonStructAccessWithDefaults { de: self.de, field_index: 0, default_index: 0, target_fields: fields })?
+        } else {
+            visitor.visit_map(AsonStructAccess { de: self.de, field_index: 0 })?
+        };
         self.de.schema_fields = parent_schema;
         self.de.field_index = parent_field_index;
         Ok(value)
@@ -1398,4 +1493,58 @@ impl<'de> de::Deserializer<'de> for FieldNameDeserializer<'de> {
         option unit unit_struct newtype_struct seq tuple tuple_struct
         map struct enum ignored_any
     }
+}
+
+// --- Default Value Deserializer ---
+// Produces a "zero" value for any type, enabling missing schema fields to use
+// type-specific defaults: false, 0, 0.0, "", [], None, etc.
+// This matches Go/Java behaviour: missing source fields → target field default.
+struct DefaultValueDeserializer;
+
+impl<'de> de::Deserializer<'de> for DefaultValueDeserializer {
+    type Error = Error;
+
+    #[inline] fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { visitor.visit_none() }
+    #[inline] fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value>           { visitor.visit_bool(false) }
+    #[inline] fn deserialize_i8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value>             { visitor.visit_i8(0) }
+    #[inline] fn deserialize_i16<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value>            { visitor.visit_i16(0) }
+    #[inline] fn deserialize_i32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value>            { visitor.visit_i32(0) }
+    #[inline] fn deserialize_i64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value>            { visitor.visit_i64(0) }
+    #[inline] fn deserialize_u8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value>             { visitor.visit_u8(0) }
+    #[inline] fn deserialize_u16<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value>            { visitor.visit_u16(0) }
+    #[inline] fn deserialize_u32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value>            { visitor.visit_u32(0) }
+    #[inline] fn deserialize_u64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value>            { visitor.visit_u64(0) }
+    #[inline] fn deserialize_f32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value>            { visitor.visit_f32(0.0) }
+    #[inline] fn deserialize_f64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value>            { visitor.visit_f64(0.0) }
+    #[inline] fn deserialize_char<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value>           { visitor.visit_char('\0') }
+    #[inline] fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value>            { visitor.visit_borrowed_str("") }
+    #[inline] fn deserialize_string<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value>         { visitor.visit_string(String::new()) }
+    #[inline] fn deserialize_bytes<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value>          { visitor.visit_bytes(&[]) }
+    #[inline] fn deserialize_byte_buf<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value>       { visitor.visit_byte_buf(Vec::new()) }
+    #[inline] fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value>         { visitor.visit_none() }
+    #[inline] fn deserialize_unit<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value>           { visitor.visit_unit() }
+    #[inline] fn deserialize_identifier<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value>     { visitor.visit_borrowed_str("") }
+    #[inline] fn deserialize_ignored_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value>    { visitor.visit_unit() }
+
+    #[inline] fn deserialize_unit_struct<V: Visitor<'de>>(self, _n: &'static str, visitor: V) -> Result<V::Value> { visitor.visit_unit() }
+    #[inline] fn deserialize_newtype_struct<V: Visitor<'de>>(self, _n: &'static str, visitor: V) -> Result<V::Value> { visitor.visit_newtype_struct(self) }
+    #[inline] fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { visitor.visit_seq(EmptySeqAccess) }
+    #[inline] fn deserialize_tuple<V: Visitor<'de>>(self, _l: usize, visitor: V) -> Result<V::Value> { visitor.visit_seq(EmptySeqAccess) }
+    #[inline] fn deserialize_tuple_struct<V: Visitor<'de>>(self, _n: &'static str, _l: usize, visitor: V) -> Result<V::Value> { visitor.visit_seq(EmptySeqAccess) }
+    #[inline] fn deserialize_map<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { visitor.visit_map(EmptyMapAccess) }
+    #[inline] fn deserialize_struct<V: Visitor<'de>>(self, _n: &'static str, _fields: &'static [&'static str], visitor: V) -> Result<V::Value> { visitor.visit_map(EmptyMapAccess) }
+    #[inline] fn deserialize_enum<V: Visitor<'de>>(self, _n: &'static str, _v: &'static [&'static str], _visitor: V) -> Result<V::Value> { Err(Error::ExpectedValue) }
+}
+
+struct EmptySeqAccess;
+struct EmptyMapAccess;
+
+impl<'de> SeqAccess<'de> for EmptySeqAccess {
+    type Error = Error;
+    #[inline] fn next_element_seed<T: DeserializeSeed<'de>>(&mut self, _seed: T) -> Result<Option<T::Value>> { Ok(None) }
+}
+impl<'de> MapAccess<'de> for EmptyMapAccess {
+    type Error = Error;
+    #[inline] fn next_key_seed<K: DeserializeSeed<'de>>(&mut self, _seed: K) -> Result<Option<K::Value>> { Ok(None) }
+    #[inline] fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, _seed: V) -> Result<V::Value> { Err(Error::ExpectedValue) }
 }
