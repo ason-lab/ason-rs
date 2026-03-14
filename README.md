@@ -20,7 +20,7 @@ ASON writes schema once and keeps each row positional:
 ```
 
 ```text
-[{id:int,name:str,active:bool}]:(1,Alice,true),(2,Bob,false)
+[{id@int,name@str,active@bool}]:(1,Alice,true),(2,Bob,false)
 ```
 
 That makes repeated records shorter and easier to transport or feed into models.
@@ -31,7 +31,7 @@ That makes repeated records shorter and easier to transport or feed into models.
 - Current API uses `encode` / `decode`, not the older `to_string` / `from_str` names
 - Optional typed schema output
 - Pretty text output and binary format
-- Works well for structs, vectors, options, maps, enums, and nested data
+- Works well for structs, vectors, options, enums, nested data, and entry-list based keyed collections
 
 ## Install
 
@@ -62,7 +62,7 @@ fn main() -> ason::Result<()> {
     let decoded: User = decode(&text)?;
 
     assert_eq!(decoded.id, 1);
-    assert_eq!(typed, "{id:int,name:str,active:bool}:(1,Alice,true)");
+    assert_eq!(typed, "{id@int,name@str,active@bool}:(1,Alice,true)");
     Ok(())
 }
 ```
@@ -116,19 +116,21 @@ cargo run --example bench
 
 ## Benchmark Snapshot
 
-Measured on this machine with:
+Run the benchmark example with:
 
 ```bash
-CARGO_BUILD_RUSTC_WRAPPER='' CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=cc RUSTFLAGS='' cargo run --example bench --release
+cargo run --example bench --release
 ```
 
-Headline numbers:
+The Rust benchmark now uses the same two-line summary style as the Go example:
 
-- Flat 1,000-record dataset: ASON serialize `57.46ms` vs JSON `73.06ms`, deserialize `84.37ms` vs JSON `111.17ms`
-- Flat 10,000-record dataset: ASON serialize `46.91ms` vs JSON `57.75ms`, deserialize `72.26ms` vs JSON `93.22ms`
-- Deep 100-record dataset: ASON serialize `234.43ms` vs JSON `252.71ms`, deserialize `211.58ms` vs JSON `313.06ms`
-- Throughput summary on 1,000 records: ASON text was `1.12x` faster than JSON for serialize and `1.34x` faster for deserialize
-- Binary summary on 1,000 flat records: BIN serialize `2.13ms` vs JSON `12.79ms`, BIN deserialize `5.86ms` vs JSON `19.87ms`
+```text
+Flat struct × 1000 (8 fields, vec)
+  Serialize:   JSON   411.05ms /   121675 B | ASON   175.25ms (2.3x) /    56718 B (46.6%) | BIN    41.32ms (9.9x) /    74454 B (61.2%)
+  Deserialize: JSON   287.06ms | ASON   195.57ms (1.5x) | BIN    64.62ms (4.4x)
+```
+
+`ASON` / `BIN` ratios are measured against JSON, and size percentages show the remaining size relative to JSON.
 
 ## License
 

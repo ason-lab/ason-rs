@@ -28,8 +28,8 @@ mod format_validation {
         inner: Inner,
     }
 
-    const BAD_FMT: &str = "{id:int, name:str}:\n  (1, Alice),\n  (2, Bob),\n  (3, Carol)";
-    const GOOD_FMT: &str = "[{id:int, name:str}]:\n  (1, Alice),\n  (2, Bob),\n  (3, Carol)";
+    const BAD_FMT: &str = "{id@int, name@str}:\n  (1, Alice),\n  (2, Bob),\n  (3, Carol)";
+    const GOOD_FMT: &str = "[{id@int, name@str}]:\n  (1, Alice),\n  (2, Bob),\n  (3, Carol)";
 
     // -------------------------------------------------------------------------
     // Invalid format tests
@@ -49,16 +49,22 @@ mod format_validation {
 
     #[test]
     fn test_bad_format_extra_tuple() {
-        let bad = "{id:int,name:str}:(10,Dave),(11,Eve)";
+        let bad = "{id@int,name@str}:(10,Dave),(11,Eve)";
         let result = decode::<FmtUser>(bad);
-        assert!(result.is_err(), "should reject trailing tuple after single struct");
+        assert!(
+            result.is_err(),
+            "should reject trailing tuple after single struct"
+        );
     }
 
     #[test]
     fn test_bad_format_many_rows_no_bracket() {
         let bad = "{id,name}:(1,A),(2,B),(3,C),(4,D),(5,E)";
         let result = decode::<Vec<FmtUser>>(bad);
-        assert!(result.is_err(), "should reject {{schema}}: without [] for Vec");
+        assert!(
+            result.is_err(),
+            "should reject {{schema}}: without [] for Vec"
+        );
     }
 
     #[test]
@@ -75,7 +81,10 @@ mod format_validation {
     fn test_good_format_untyped() {
         let good = "[{id,name}]:\n  (1,Alice),\n  (2,Bob),\n  (3,Carol)";
         let result = decode::<Vec<FmtUser>>(good);
-        assert!(result.is_ok(), "should accept untyped [{{}}]: format for Vec");
+        assert!(
+            result.is_ok(),
+            "should accept untyped [{{}}]: format for Vec"
+        );
         let users = result.unwrap();
         assert_eq!(users.len(), 3);
         assert_eq!(users[1].name, "Bob");
@@ -83,8 +92,8 @@ mod format_validation {
 
     #[test]
     fn test_good_format_single_struct() {
-        // {id:int, name:str}: (1, Alice) — single struct, one tuple: MUST succeed
-        let good = "{id:int, name:str}:(1,Alice)";
+        // {id@int, name@str}: (1, Alice) — single struct, one tuple: MUST succeed
+        let good = "{id@int, name@str}:(1,Alice)";
         let result = decode::<FmtUser>(good);
         assert!(result.is_ok(), "should accept single struct with one tuple");
         let u = result.unwrap();
@@ -94,8 +103,8 @@ mod format_validation {
 
     #[test]
     fn test_good_format_vec_single_item() {
-        // [{id:int, name:str}]: (1, Alice) — array schema with one tuple: MUST succeed
-        let good = "[{id:int, name:str}]:(1,Alice)";
+        // [{id@int, name@str}]: (1, Alice) — array schema with one tuple: MUST succeed
+        let good = "[{id@int, name@str}]:(1,Alice)";
         let result = decode::<Vec<FmtUser>>(good);
         assert!(result.is_ok(), "should accept [{{}}]: with single tuple");
         let users = result.unwrap();
@@ -110,7 +119,10 @@ mod format_validation {
 
     #[test]
     fn test_pretty_simple_roundtrip() {
-        let u = FmtUser { id: 42, name: "Alice".into() };
+        let u = FmtUser {
+            id: 42,
+            name: "Alice".into(),
+        };
         let pretty = encode_pretty(&u).unwrap();
         let u2: FmtUser = decode(&pretty).unwrap();
         assert_eq!(u, u2);
@@ -118,9 +130,12 @@ mod format_validation {
 
     #[test]
     fn test_pretty_typed_roundtrip() {
-        let u = FmtUser { id: 7, name: "Bob".into() };
+        let u = FmtUser {
+            id: 7,
+            name: "Bob".into(),
+        };
         let pretty = encode_pretty_typed(&u).unwrap();
-        assert!(pretty.contains(":int") || pretty.contains(":str"));
+        assert!(pretty.contains("@int") || pretty.contains("@str"));
         let u2: FmtUser = decode(&pretty).unwrap();
         assert_eq!(u, u2);
     }
@@ -128,9 +143,18 @@ mod format_validation {
     #[test]
     fn test_pretty_vec_roundtrip() {
         let users = vec![
-            FmtUser { id: 1, name: "Alice".into() },
-            FmtUser { id: 2, name: "Bob".into() },
-            FmtUser { id: 3, name: "Carol".into() },
+            FmtUser {
+                id: 1,
+                name: "Alice".into(),
+            },
+            FmtUser {
+                id: 2,
+                name: "Bob".into(),
+            },
+            FmtUser {
+                id: 3,
+                name: "Carol".into(),
+            },
         ];
         let pretty = encode_pretty(&users).unwrap();
         assert!(pretty.contains('\n'), "expected multi-line output");
@@ -141,9 +165,21 @@ mod format_validation {
     #[test]
     fn test_pretty_score_slice_roundtrip() {
         let scores = vec![
-            Score { id: 1, value: 95.5, label: "excellent".into() },
-            Score { id: 2, value: 72.3, label: "good".into() },
-            Score { id: 3, value: 40.0, label: "fail".into() },
+            Score {
+                id: 1,
+                value: 95.5,
+                label: "excellent".into(),
+            },
+            Score {
+                id: 2,
+                value: 72.3,
+                label: "good".into(),
+            },
+            Score {
+                id: 3,
+                value: 40.0,
+                label: "fail".into(),
+            },
         ];
         let pretty = encode_pretty(&scores).unwrap();
         let scores2: Vec<Score> = decode(&pretty).unwrap();
@@ -154,7 +190,13 @@ mod format_validation {
 
     #[test]
     fn test_pretty_nested_roundtrip() {
-        let o = Outer { id: 5, inner: Inner { x: 10, label: "test".into() } };
+        let o = Outer {
+            id: 5,
+            inner: Inner {
+                x: 10,
+                label: "test".into(),
+            },
+        };
         let pretty = encode_pretty(&o).unwrap();
         let o2: Outer = decode(&pretty).unwrap();
         assert_eq!(o, o2);
@@ -163,7 +205,10 @@ mod format_validation {
     #[test]
     fn test_pretty_large_vec_roundtrip() {
         let users: Vec<FmtUser> = (1..=50)
-            .map(|i| FmtUser { id: i, name: format!("user{}", i) })
+            .map(|i| FmtUser {
+                id: i,
+                name: format!("user{}", i),
+            })
             .collect();
         let pretty = encode_pretty(&users).unwrap();
         let users2: Vec<FmtUser> = decode(&pretty).unwrap();
@@ -174,11 +219,17 @@ mod format_validation {
     #[test]
     fn test_pretty_typed_vec_roundtrip() {
         let users = vec![
-            FmtUser { id: 1, name: "Alice".into() },
-            FmtUser { id: 2, name: "Bob".into() },
+            FmtUser {
+                id: 1,
+                name: "Alice".into(),
+            },
+            FmtUser {
+                id: 2,
+                name: "Bob".into(),
+            },
         ];
         let pretty = encode_pretty_typed(&users).unwrap();
-        assert!(pretty.contains(":int") || pretty.contains(":str"));
+        assert!(pretty.contains("@int") || pretty.contains("@str"));
         let users2: Vec<FmtUser> = decode(&pretty).unwrap();
         assert_eq!(users, users2);
     }

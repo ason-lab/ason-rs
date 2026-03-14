@@ -222,6 +222,22 @@ fn format_bytes(b: usize) -> String {
     }
 }
 
+fn format_ratio(base: f64, target: f64) -> String {
+    if target <= 0.0 {
+        return "infx".into();
+    }
+    let s = format!("{:.1}", base / target);
+    s.trim_end_matches('0').trim_end_matches('.').to_string() + "x"
+}
+
+fn format_percent(part: usize, whole: usize) -> String {
+    if whole == 0 {
+        return "0%".into();
+    }
+    let s = format!("{:.1}", part as f64 * 100.0 / whole as f64);
+    s.trim_end_matches('0').trim_end_matches('.').to_string() + "%"
+}
+
 // ===========================================================================
 // Benchmark runner
 // ===========================================================================
@@ -230,44 +246,38 @@ struct BenchResult {
     name: String,
     json_ser_ms: f64,
     ason_ser_ms: f64,
+    bin_ser_ms: f64,
     json_de_ms: f64,
     ason_de_ms: f64,
+    bin_de_ms: f64,
     json_bytes: usize,
     ason_bytes: usize,
+    bin_bytes: usize,
 }
 
 impl BenchResult {
     fn print(&self) {
-        let ser_ratio = self.json_ser_ms / self.ason_ser_ms;
-        let de_ratio = self.json_de_ms / self.ason_de_ms;
-        let saving = (1.0 - self.ason_bytes as f64 / self.json_bytes as f64) * 100.0;
-
         println!("  {}", self.name);
         println!(
-            "    Serialize:   JSON {:>8.2}ms | ASON {:>8.2}ms | ratio {:.2}x {}",
+            "    Serialize:   JSON {:.2}ms/{}B | ASON {:.2}ms({})/{}B({}) | BIN {:.2}ms({})/{}B({})",
             self.json_ser_ms,
+            self.json_bytes,
             self.ason_ser_ms,
-            ser_ratio,
-            if ser_ratio >= 1.0 {
-                "✓ ASON faster"
-            } else {
-                ""
-            }
+            format_ratio(self.json_ser_ms, self.ason_ser_ms),
+            self.ason_bytes,
+            format_percent(self.ason_bytes, self.json_bytes),
+            self.bin_ser_ms,
+            format_ratio(self.json_ser_ms, self.bin_ser_ms),
+            self.bin_bytes,
+            format_percent(self.bin_bytes, self.json_bytes),
         );
         println!(
-            "    Deserialize: JSON {:>8.2}ms | ASON {:>8.2}ms | ratio {:.2}x {}",
+            "    Deserialize: JSON {:>8.2}ms | ASON {:>8.2}ms ({}) | BIN {:>8.2}ms ({})",
             self.json_de_ms,
             self.ason_de_ms,
-            de_ratio,
-            if de_ratio >= 1.0 {
-                "✓ ASON faster"
-            } else {
-                ""
-            }
-        );
-        println!(
-            "    Size:        JSON {:>8} B | ASON {:>8} B | saving {:.0}%",
-            self.json_bytes, self.ason_bytes, saving
+            format_ratio(self.json_de_ms, self.ason_de_ms),
+            self.bin_de_ms,
+            format_ratio(self.json_de_ms, self.bin_de_ms),
         );
     }
 }
@@ -295,6 +305,13 @@ fn bench_flat(count: usize, iterations: u32) -> BenchResult {
     }
     let ason_ser = start.elapsed();
 
+    let mut bin_buf = Vec::new();
+    let start = Instant::now();
+    for _ in 0..iterations {
+        bin_buf = encode_binary(&users).unwrap();
+    }
+    let bin_ser = start.elapsed();
+
     // JSON deserialize
     let start = Instant::now();
     for _ in 0..iterations {
@@ -309,18 +326,29 @@ fn bench_flat(count: usize, iterations: u32) -> BenchResult {
     }
     let ason_de = start.elapsed();
 
+    let start = Instant::now();
+    for _ in 0..iterations {
+        let _: Vec<User> = decode_binary(&bin_buf).unwrap();
+    }
+    let bin_de = start.elapsed();
+
     // Verify
     let decoded: Vec<User> = decode(&ason_str).unwrap();
     assert_eq!(users, decoded, "flat {} roundtrip failed", count);
+    let decoded_bin: Vec<User> = decode_binary(&bin_buf).unwrap();
+    assert_eq!(users, decoded_bin, "flat {} binary roundtrip failed", count);
 
     BenchResult {
-        name: format!("Flat struct × {} ({} fields)", count, 8),
+        name: format!("Flat struct × {} (8 fields, vec)", count),
         json_ser_ms: json_ser.as_secs_f64() * 1000.0,
         ason_ser_ms: ason_ser.as_secs_f64() * 1000.0,
+        bin_ser_ms: bin_ser.as_secs_f64() * 1000.0,
         json_de_ms: json_de.as_secs_f64() * 1000.0,
         ason_de_ms: ason_de.as_secs_f64() * 1000.0,
+        bin_de_ms: bin_de.as_secs_f64() * 1000.0,
         json_bytes: json_str.len(),
         ason_bytes: ason_str.len(),
+        bin_bytes: bin_buf.len(),
     }
 }
 
@@ -346,6 +374,13 @@ fn bench_all_types(count: usize, iterations: u32) -> BenchResult {
     }
     let ason_ser = start.elapsed();
 
+    let mut bin_buf = Vec::new();
+    let start = Instant::now();
+    for _ in 0..iterations {
+        bin_buf = encode_binary(&items).unwrap();
+    }
+    let bin_ser = start.elapsed();
+
     let start = Instant::now();
     for _ in 0..iterations {
         let _: Vec<AllTypes> = serde_json::from_str(&json_str).unwrap();
@@ -359,18 +394,33 @@ fn bench_all_types(count: usize, iterations: u32) -> BenchResult {
     }
     let ason_de = start.elapsed();
 
+    let start = Instant::now();
+    for _ in 0..iterations {
+        let _: Vec<AllTypes> = decode_binary(&bin_buf).unwrap();
+    }
+    let bin_de = start.elapsed();
+
     // Verify
     let decoded: Vec<AllTypes> = decode(&ason_str).unwrap();
     assert_eq!(items, decoded, "all-types {} roundtrip failed", count);
+    let decoded_bin: Vec<AllTypes> = decode_binary(&bin_buf).unwrap();
+    assert_eq!(
+        items, decoded_bin,
+        "all-types {} binary roundtrip failed",
+        count
+    );
 
     BenchResult {
-        name: format!("All-types struct × {} ({} fields, per-struct)", count, 16),
+        name: format!("All-types struct × {} (16 fields, vec)", count),
         json_ser_ms: json_ser.as_secs_f64() * 1000.0,
         ason_ser_ms: ason_ser.as_secs_f64() * 1000.0,
+        bin_ser_ms: bin_ser.as_secs_f64() * 1000.0,
         json_de_ms: json_de.as_secs_f64() * 1000.0,
         ason_de_ms: ason_de.as_secs_f64() * 1000.0,
+        bin_de_ms: bin_de.as_secs_f64() * 1000.0,
         json_bytes: json_str.len(),
         ason_bytes: ason_str.len(),
+        bin_bytes: bin_buf.len(),
     }
 }
 
@@ -396,6 +446,13 @@ fn bench_deep(count: usize, iterations: u32) -> BenchResult {
     }
     let ason_ser = start.elapsed();
 
+    let mut bin_buf = Vec::new();
+    let start = Instant::now();
+    for _ in 0..iterations {
+        bin_buf = encode_binary(&companies).unwrap();
+    }
+    let bin_ser = start.elapsed();
+
     let start = Instant::now();
     for _ in 0..iterations {
         let _: Vec<Company> = serde_json::from_str(&json_str).unwrap();
@@ -408,22 +465,36 @@ fn bench_deep(count: usize, iterations: u32) -> BenchResult {
     }
     let ason_de = start.elapsed();
 
+    let start = Instant::now();
+    for _ in 0..iterations {
+        let _: Vec<Company> = decode_binary(&bin_buf).unwrap();
+    }
+    let bin_de = start.elapsed();
+
     // Verify
     let decoded: Vec<Company> = decode(&ason_str).unwrap();
     assert_eq!(companies, decoded, "deep {} roundtrip failed", count);
+    let decoded_bin: Vec<Company> = decode_binary(&bin_buf).unwrap();
+    assert_eq!(
+        companies, decoded_bin,
+        "deep {} binary roundtrip failed",
+        count
+    );
 
-    let nodes_per = 2 * 2 * 3 * 4; // divisions * teams * projects * tasks = 48 tasks
     BenchResult {
         name: format!(
-            "5-level deep × {} (Company>Division>Team>Project>Task, ~{} nodes each)",
-            count, nodes_per
+            "5-level deep × {} (Company>Division>Team>Project>Task)",
+            count
         ),
         json_ser_ms: json_ser.as_secs_f64() * 1000.0,
         ason_ser_ms: ason_ser.as_secs_f64() * 1000.0,
+        bin_ser_ms: bin_ser.as_secs_f64() * 1000.0,
         json_de_ms: json_de.as_secs_f64() * 1000.0,
         ason_de_ms: ason_de.as_secs_f64() * 1000.0,
+        bin_de_ms: bin_de.as_secs_f64() * 1000.0,
         json_bytes: json_str.len(),
         ason_bytes: ason_str.len(),
+        bin_bytes: bin_buf.len(),
     }
 }
 
@@ -547,25 +618,27 @@ struct BinBenchResult {
 
 impl BinBenchResult {
     fn print(&self) {
-        let ser_ason = self.json_ser_ms / self.ason_ser_ms;
-        let ser_bin = self.json_ser_ms / self.bin_ser_ms;
-        let de_ason = self.json_de_ms / self.ason_de_ms;
-        let de_bin = self.json_de_ms / self.bin_de_ms;
-        let j = self.json_bytes as f64;
-        let sv_a = (1.0 - self.ason_bytes as f64 / j) * 100.0;
-        let sv_b = (1.0 - self.bin_bytes as f64 / j) * 100.0;
         println!("  {}", self.name);
         println!(
-            "    Serialize:   JSON {:>8.2}ms | ASON {:>8.2}ms ({:.1}x) | BIN {:>8.2}ms ({:.1}x)",
-            self.json_ser_ms, self.ason_ser_ms, ser_ason, self.bin_ser_ms, ser_bin
+            "    Serialize:   JSON {:.2}ms/{}B | ASON {:.2}ms({})/{}B({}) | BIN {:.2}ms({})/{}B({})",
+            self.json_ser_ms,
+            self.json_bytes,
+            self.ason_ser_ms,
+            format_ratio(self.json_ser_ms, self.ason_ser_ms),
+            self.ason_bytes,
+            format_percent(self.ason_bytes, self.json_bytes),
+            self.bin_ser_ms,
+            format_ratio(self.json_ser_ms, self.bin_ser_ms),
+            self.bin_bytes,
+            format_percent(self.bin_bytes, self.json_bytes),
         );
         println!(
-            "    Deserialize: JSON {:>8.2}ms | ASON {:>8.2}ms ({:.1}x) | BIN {:>8.2}ms ({:.1}x)",
-            self.json_de_ms, self.ason_de_ms, de_ason, self.bin_de_ms, de_bin
-        );
-        println!(
-            "    Size:  JSON {:>8} B | ASON {:>8} B ({:.0}% smaller) | BIN {:>8} B ({:.0}% smaller)",
-            self.json_bytes, self.ason_bytes, sv_a, self.bin_bytes, sv_b
+            "    Deserialize: JSON {:>8.2}ms | ASON {:>8.2}ms ({}) | BIN {:>8.2}ms ({})",
+            self.json_de_ms,
+            self.ason_de_ms,
+            format_ratio(self.json_de_ms, self.ason_de_ms),
+            self.bin_de_ms,
+            format_ratio(self.json_de_ms, self.bin_de_ms),
         );
     }
 }
@@ -819,7 +892,7 @@ fn main() {
         // Build typed version by replacing the schema header
         let ason_typed = ason_untyped.replacen(
             "{id,name,email,age,score,active,role,city}:",
-            "{id:int,name:str,email:str,age:int,score:float,active:bool,role:str,city:str}:",
+            "{id@int,name@str,email@str,age@int,score@float,active@bool,role@str,city@str}:",
             1,
         );
         // Verify both parse identically
@@ -865,7 +938,7 @@ fn main() {
         let ason_deep_untyped = encode(company).unwrap();
         let ason_deep_typed = ason_deep_untyped.replacen(
             "{name,founded,revenue_m,public,divisions,tags}:",
-            "{name:str,founded:int,revenue_m:float,public:bool,divisions,tags}:",
+            "{name@str,founded@int,revenue_m@float,public@bool,divisions,tags}:",
             1,
         );
 
@@ -911,7 +984,7 @@ fn main() {
         let ason_at_untyped = encode(at).unwrap();
         let ason_at_typed = ason_at_untyped.replacen(
             "{b,i8v,i16v,i32v,i64v,u8v,u16v,u32v,u64v,f32v,f64v,s,opt_some,opt_none,vec_int,vec_str}:",
-            "{b:bool,i8v:int,i16v:int,i32v:int,i64v:int,u8v:int,u16v:int,u32v:int,u64v:int,f32v:float,f64v:float,s:str,opt_some:int,opt_none:int,vec_int:[int],vec_str:[str]}:",
+            "{b@bool,i8v@int,i16v@int,i32v@int,i64v@int,u8v@int,u16v@int,u32v@int,u64v@int,f32v@float,f64v@float,s@str,opt_some@int,opt_none@int,vec_int@[int],vec_str@[str]}:",
             1,
         );
 

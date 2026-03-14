@@ -22,7 +22,6 @@
 //! bytes     → u32 LE length + raw bytes
 //! Option<T> → u8 tag (0=None, 1=Some) + [T payload if Some]
 //! Vec<T>    → u32 LE count + [element × count]
-//! Map       → u32 LE count + [(key, value) × count]
 //! struct    → fields in declaration order (no length prefix — known from schema)
 //! tuple     → elements in order (no length prefix)
 //! enum      → u32 LE variant_index + [payload for non-unit variants]
@@ -38,12 +37,12 @@
 //! - All primitives written/read via `to_le_bytes` / `from_le_bytes` — compiler typically
 //!   emits a single `STR`/`LDR` instruction on aarch64 / `MOV`/`MOV` on x86-64.
 
-use core::mem;
 use crate::error::{Error, Result};
 use crate::simd;
-use serde::de::{self, DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor};
+use core::mem;
+use serde::de::{self, DeserializeSeed, EnumAccess, SeqAccess, VariantAccess, Visitor};
 use serde::ser::{
-    self, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant, SerializeTuple,
+    self, SerializeSeq, SerializeStruct, SerializeStructVariant, SerializeTuple,
     SerializeTupleStruct, SerializeTupleVariant,
 };
 use serde::{Deserialize, Serialize};
@@ -98,7 +97,9 @@ impl BinarySerializer {
 
     #[inline]
     pub fn with_capacity(cap: usize) -> Self {
-        Self { buf: Vec::with_capacity(cap) }
+        Self {
+            buf: Vec::with_capacity(cap),
+        }
     }
 
     // ------------------------------------------------------------------
@@ -184,7 +185,7 @@ impl<'a> ser::Serializer for &'a mut BinarySerializer {
     type SerializeTuple = &'a mut BinarySerializer;
     type SerializeTupleStruct = &'a mut BinarySerializer;
     type SerializeTupleVariant = &'a mut BinarySerializer;
-    type SerializeMap = BinSeqSer<'a>;
+    type SerializeMap = ser::Impossible<(), Error>;
     type SerializeStruct = &'a mut BinarySerializer;
     type SerializeStructVariant = &'a mut BinarySerializer;
 
@@ -357,9 +358,11 @@ impl<'a> ser::Serializer for &'a mut BinarySerializer {
         Ok(self)
     }
 
-    /// Map: write placeholder u32 count (fixed up in `end()`).
-    fn serialize_map(self, len: Option<usize>) -> Result<BinSeqSer<'a>> {
-        Ok(BinSeqSer::new(self, len))
+    fn serialize_map(self, _len: Option<usize>) -> Result<ser::Impossible<(), Error>> {
+        Err(Error::Message(
+            "map fields are no longer supported; model key-value data as a slice of entry structs"
+                .into(),
+        ))
     }
 
     /// Struct: fields written in order, no length prefix.
@@ -388,7 +391,7 @@ impl<'a> ser::Serializer for &'a mut BinarySerializer {
 }
 
 // ============================================================================
-// BinSeqSer — handles sequences and maps with unknown-at-call-time lengths
+// BinSeqSer — handles sequences with unknown-at-call-time lengths
 // ============================================================================
 
 pub struct BinSeqSer<'a> {
@@ -404,7 +407,11 @@ impl<'a> BinSeqSer<'a> {
         // Write placeholder — will be fixed up in end()
         let count = known_len.unwrap_or(0) as u32;
         ser.write_u32(count);
-        BinSeqSer { ser, len_pos, count: 0 }
+        BinSeqSer {
+            ser,
+            len_pos,
+            count: 0,
+        }
     }
 
     #[inline(always)]
@@ -421,28 +428,6 @@ impl<'a> SerializeSeq for BinSeqSer<'a> {
     #[inline]
     fn serialize_element<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<()> {
         self.count += 1;
-        value.serialize(&mut *self.ser)
-    }
-
-    #[inline]
-    fn end(mut self) -> Result<()> {
-        self.fix_len();
-        Ok(())
-    }
-}
-
-impl<'a> SerializeMap for BinSeqSer<'a> {
-    type Ok = ();
-    type Error = Error;
-
-    #[inline]
-    fn serialize_key<T: ?Sized + Serialize>(&mut self, key: &T) -> Result<()> {
-        self.count += 1;
-        key.serialize(&mut *self.ser)
-    }
-
-    #[inline]
-    fn serialize_value<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<()> {
         value.serialize(&mut *self.ser)
     }
 
@@ -507,7 +492,11 @@ impl<'a> SerializeStruct for &'a mut BinarySerializer {
     type Error = Error;
 
     #[inline]
-    fn serialize_field<T: ?Sized + Serialize>(&mut self, _key: &'static str, value: &T) -> Result<()> {
+    fn serialize_field<T: ?Sized + Serialize>(
+        &mut self,
+        _key: &'static str,
+        value: &T,
+    ) -> Result<()> {
         value.serialize(&mut **self)
     }
 
@@ -522,7 +511,11 @@ impl<'a> SerializeStructVariant for &'a mut BinarySerializer {
     type Error = Error;
 
     #[inline]
-    fn serialize_field<T: ?Sized + Serialize>(&mut self, _key: &'static str, value: &T) -> Result<()> {
+    fn serialize_field<T: ?Sized + Serialize>(
+        &mut self,
+        _key: &'static str,
+        value: &T,
+    ) -> Result<()> {
         value.serialize(&mut **self)
     }
 
@@ -571,9 +564,7 @@ impl<'de> BinaryDeserializer<'de> {
     #[inline(always)]
     fn read_u16(&mut self) -> Result<u16> {
         self.ensure(2)?;
-        let v = u16::from_le_bytes(
-            self.data[self.pos..self.pos + 2].try_into().unwrap()
-        );
+        let v = u16::from_le_bytes(self.data[self.pos..self.pos + 2].try_into().unwrap());
         self.pos += 2;
         Ok(v)
     }
@@ -581,9 +572,7 @@ impl<'de> BinaryDeserializer<'de> {
     #[inline(always)]
     fn read_u32(&mut self) -> Result<u32> {
         self.ensure(4)?;
-        let v = u32::from_le_bytes(
-            self.data[self.pos..self.pos + 4].try_into().unwrap()
-        );
+        let v = u32::from_le_bytes(self.data[self.pos..self.pos + 4].try_into().unwrap());
         self.pos += 4;
         Ok(v)
     }
@@ -591,9 +580,7 @@ impl<'de> BinaryDeserializer<'de> {
     #[inline(always)]
     fn read_u64(&mut self) -> Result<u64> {
         self.ensure(8)?;
-        let v = u64::from_le_bytes(
-            self.data[self.pos..self.pos + 8].try_into().unwrap()
-        );
+        let v = u64::from_le_bytes(self.data[self.pos..self.pos + 8].try_into().unwrap());
         self.pos += 8;
         Ok(v)
     }
@@ -606,9 +593,7 @@ impl<'de> BinaryDeserializer<'de> {
     #[inline(always)]
     fn read_i16(&mut self) -> Result<i16> {
         self.ensure(2)?;
-        let v = i16::from_le_bytes(
-            self.data[self.pos..self.pos + 2].try_into().unwrap()
-        );
+        let v = i16::from_le_bytes(self.data[self.pos..self.pos + 2].try_into().unwrap());
         self.pos += 2;
         Ok(v)
     }
@@ -616,9 +601,7 @@ impl<'de> BinaryDeserializer<'de> {
     #[inline(always)]
     fn read_i32(&mut self) -> Result<i32> {
         self.ensure(4)?;
-        let v = i32::from_le_bytes(
-            self.data[self.pos..self.pos + 4].try_into().unwrap()
-        );
+        let v = i32::from_le_bytes(self.data[self.pos..self.pos + 4].try_into().unwrap());
         self.pos += 4;
         Ok(v)
     }
@@ -626,9 +609,7 @@ impl<'de> BinaryDeserializer<'de> {
     #[inline(always)]
     fn read_i64(&mut self) -> Result<i64> {
         self.ensure(8)?;
-        let v = i64::from_le_bytes(
-            self.data[self.pos..self.pos + 8].try_into().unwrap()
-        );
+        let v = i64::from_le_bytes(self.data[self.pos..self.pos + 8].try_into().unwrap());
         self.pos += 8;
         Ok(v)
     }
@@ -817,11 +798,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut BinaryDeserializer<'de> {
     }
 
     /// Tuple: length known from schema, no prefix in data.
-    fn deserialize_tuple<V: Visitor<'de>>(
-        self,
-        len: usize,
-        visitor: V,
-    ) -> Result<V::Value> {
+    fn deserialize_tuple<V: Visitor<'de>>(self, len: usize, visitor: V) -> Result<V::Value> {
         visitor.visit_seq(BinSeqAccess::new(self, len))
     }
 
@@ -834,10 +811,11 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut BinaryDeserializer<'de> {
         visitor.visit_seq(BinSeqAccess::new(self, len))
     }
 
-    /// Map: read `u32 LE` count, then deliver pairs via `MapAccess`.
-    fn deserialize_map<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let count = self.read_u32()? as usize;
-        visitor.visit_map(BinMapAccess::new(self, count))
+    fn deserialize_map<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
+        Err(Error::Message(
+            "map fields are no longer supported; model key-value data as a slice of entry structs"
+                .into(),
+        ))
     }
 
     /// Struct: fields are positional — no count prefix in data.
@@ -894,60 +872,12 @@ impl<'de, 'a> SeqAccess<'de> for BinSeqAccess<'a, 'de> {
     type Error = Error;
 
     #[inline]
-    fn next_element_seed<T: DeserializeSeed<'de>>(
-        &mut self,
-        seed: T,
-    ) -> Result<Option<T::Value>> {
+    fn next_element_seed<T: DeserializeSeed<'de>>(&mut self, seed: T) -> Result<Option<T::Value>> {
         if self.remaining == 0 {
             return Ok(None);
         }
         self.remaining -= 1;
         seed.deserialize(&mut *self.de).map(Some)
-    }
-
-    #[inline]
-    fn size_hint(&self) -> Option<usize> {
-        Some(self.remaining)
-    }
-}
-
-// ============================================================================
-// MapAccess — drives HashMap deserialization
-// ============================================================================
-
-struct BinMapAccess<'a, 'de: 'a> {
-    de: &'a mut BinaryDeserializer<'de>,
-    remaining: usize,
-}
-
-impl<'a, 'de> BinMapAccess<'a, 'de> {
-    #[inline]
-    fn new(de: &'a mut BinaryDeserializer<'de>, remaining: usize) -> Self {
-        Self { de, remaining }
-    }
-}
-
-impl<'de, 'a> MapAccess<'de> for BinMapAccess<'a, 'de> {
-    type Error = Error;
-
-    #[inline]
-    fn next_key_seed<K: DeserializeSeed<'de>>(
-        &mut self,
-        seed: K,
-    ) -> Result<Option<K::Value>> {
-        if self.remaining == 0 {
-            return Ok(None);
-        }
-        self.remaining -= 1;
-        seed.deserialize(&mut *self.de).map(Some)
-    }
-
-    #[inline]
-    fn next_value_seed<V: DeserializeSeed<'de>>(
-        &mut self,
-        seed: V,
-    ) -> Result<V::Value> {
-        seed.deserialize(&mut *self.de)
     }
 
     #[inline]
@@ -990,18 +920,11 @@ impl<'de, 'a> VariantAccess<'de> for BinVariantAccess<'a, 'de> {
         Ok(())
     }
 
-    fn newtype_variant_seed<T: DeserializeSeed<'de>>(
-        self,
-        seed: T,
-    ) -> Result<T::Value> {
+    fn newtype_variant_seed<T: DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value> {
         seed.deserialize(self.de)
     }
 
-    fn tuple_variant<V: Visitor<'de>>(
-        self,
-        len: usize,
-        visitor: V,
-    ) -> Result<V::Value> {
+    fn tuple_variant<V: Visitor<'de>>(self, len: usize, visitor: V) -> Result<V::Value> {
         visitor.visit_seq(BinSeqAccess::new(self.de, len))
     }
 
@@ -1027,7 +950,6 @@ const _: () = {
 mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
-    use std::collections::HashMap;
 
     #[derive(Debug, Serialize, Deserialize, PartialEq)]
     struct User {
@@ -1066,7 +988,12 @@ mod tests {
 
     #[test]
     fn test_user_roundtrip() {
-        let u = User { id: 42, name: "Alice".into(), score: 9.5, active: true };
+        let u = User {
+            id: 42,
+            name: "Alice".into(),
+            score: 9.5,
+            active: true,
+        };
         let bytes = encode_binary(&u).unwrap();
         let u2: User = decode_binary(&bytes).unwrap();
         assert_eq!(u, u2);
@@ -1094,7 +1021,10 @@ mod tests {
 
     #[test]
     fn test_option_some_none() {
-        let a = WithOption { id: 1, label: Some("hello".into()) };
+        let a = WithOption {
+            id: 1,
+            label: Some("hello".into()),
+        };
         let b = WithOption { id: 2, label: None };
         let b1 = encode_binary(&a).unwrap();
         let b2 = encode_binary(&b).unwrap();
@@ -1106,7 +1036,10 @@ mod tests {
 
     #[test]
     fn test_vec_roundtrip() {
-        let v = WithVec { name: "stats".into(), scores: vec![10, 20, 30, 40, 50] };
+        let v = WithVec {
+            name: "stats".into(),
+            scores: vec![10, 20, 30, 40, 50],
+        };
         let bytes = encode_binary(&v).unwrap();
         let v2: WithVec = decode_binary(&bytes).unwrap();
         assert_eq!(v, v2);
@@ -1115,8 +1048,18 @@ mod tests {
     #[test]
     fn test_vec_of_structs() {
         let users = vec![
-            User { id: 1, name: "Alice".into(), score: 9.0, active: true },
-            User { id: 2, name: "Bob".into(), score: 7.5, active: false },
+            User {
+                id: 1,
+                name: "Alice".into(),
+                score: 9.0,
+                active: true,
+            },
+            User {
+                id: 2,
+                name: "Bob".into(),
+                score: 7.5,
+                active: false,
+            },
         ];
         let bytes = encode_binary(&users).unwrap();
         let users2: Vec<User> = decode_binary(&bytes).unwrap();
@@ -1124,14 +1067,28 @@ mod tests {
     }
 
     #[test]
-    fn test_map_roundtrip() {
+    fn test_entry_list_roundtrip() {
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct Entry {
+            key: String,
+            value: i64,
+        }
         #[derive(Debug, Serialize, Deserialize, PartialEq)]
         struct M {
-            data: HashMap<String, i64>,
+            data: Vec<Entry>,
         }
-        let mut m = M { data: HashMap::new() };
-        m.data.insert("a".into(), 1);
-        m.data.insert("b".into(), 2);
+        let m = M {
+            data: vec![
+                Entry {
+                    key: "a".into(),
+                    value: 1,
+                },
+                Entry {
+                    key: "b".into(),
+                    value: 2,
+                },
+            ],
+        };
         let bytes = encode_binary(&m).unwrap();
         let m2: M = decode_binary(&bytes).unwrap();
         assert_eq!(m, m2);
@@ -1146,7 +1103,12 @@ mod tests {
             Blue,
             Custom(u8, u8, u8),
         }
-        for c in [Color::Red, Color::Green, Color::Blue, Color::Custom(10, 20, 30)] {
+        for c in [
+            Color::Red,
+            Color::Green,
+            Color::Blue,
+            Color::Custom(10, 20, 30),
+        ] {
             let bytes = encode_binary(&c).unwrap();
             let c2: Color = decode_binary(&bytes).unwrap();
             assert_eq!(c, c2);
@@ -1156,11 +1118,21 @@ mod tests {
     #[test]
     fn test_binary_size_vs_text() {
         let users: Vec<User> = (0..100)
-            .map(|i| User { id: i, name: format!("User_{}", i), score: i as f64 * 0.5, active: i % 2 == 0 })
+            .map(|i| User {
+                id: i,
+                name: format!("User_{}", i),
+                score: i as f64 * 0.5,
+                active: i % 2 == 0,
+            })
             .collect();
         let bin = encode_binary(&users).unwrap();
         let json = serde_json::to_string(&users).unwrap();
         // Binary should be significantly smaller
-        assert!(bin.len() < json.len(), "bin={} json={}", bin.len(), json.len());
+        assert!(
+            bin.len() < json.len(),
+            "bin={} json={}",
+            bin.len(),
+            json.len()
+        );
     }
 }

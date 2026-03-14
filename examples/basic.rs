@@ -1,6 +1,4 @@
-use ason::{
-    decode, decode_binary, encode, encode_binary, encode_typed,
-};
+use ason::{decode, decode_binary, encode, encode_binary, encode_typed};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -27,10 +25,10 @@ fn main() {
     let typed_str = encode_typed(&user).unwrap();
     println!("Serialize with type annotations:");
     println!("  {}\n", typed_str);
-    assert!(typed_str.starts_with("{id:int,name:str,active:bool}:"));
+    assert!(typed_str.starts_with("{id@int,name@str,active@bool}:"));
 
     // 3. Deserialize from ASON (accepts both annotated and unannotated)
-    let input = "{id:int,name:str,active:bool}:(1,Alice,true)";
+    let input = "{id@int,name@str,active@bool}:(1,Alice,true)";
     let user: User = decode(input).unwrap();
     println!("Deserialize single struct:");
     println!("  {:?}\n", user);
@@ -61,11 +59,11 @@ fn main() {
     let typed_vec = encode_typed(&users).unwrap();
     println!("Serialize vec with type annotations:");
     println!("  {}\n", typed_vec);
-    assert!(typed_vec.starts_with("[{id:int,name:str,active:bool}]:"));
+    assert!(typed_vec.starts_with("[{id@int,name@str,active@bool}]:"));
 
     // 6. Deserialize vec
     let input =
-        "[{id:int,name:str,active:bool}]:(1,Alice,true),(2,Bob,false),(3,\"Carol Smith\",true)";
+        "[{id@int,name@str,active@bool}]:(1,Alice,true),(2,Bob,false),(3,\"Carol Smith\",true)";
     let users: Vec<User> = decode(input).unwrap();
     println!("Deserialize vec:");
     for u in &users {
@@ -74,7 +72,7 @@ fn main() {
 
     // 7. Multiline format
     println!("\nMultiline format:");
-    let multiline = "[{id:int, name:str, active:bool}]:
+    let multiline = "[{id@int, name@str, active@bool}]:
   (1, Alice, true),
   (2, Bob, false),
   (3, \"Carol Smith\", true)";
@@ -150,7 +148,7 @@ fn main() {
         name: String,
         tags: Vec<String>,
     }
-    let input = "{name,tags}:(Alice,[rust,go,python])";
+    let input = "{name,tags@[]}:(Alice,[rust,go,python])";
     let t: Tagged = decode(input).unwrap();
     println!("  {:?}", t);
 

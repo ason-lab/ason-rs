@@ -55,7 +55,11 @@ impl fmt::Display for Error {
             Error::UnclosedParen => write!(f, "unclosed parenthesis"),
             Error::UnclosedBracket => write!(f, "unclosed bracket"),
             Error::FieldCountMismatch { expected, got } => {
-                write!(f, "field count mismatch: expected {}, got {}", expected, got)
+                write!(
+                    f,
+                    "field count mismatch: expected {}, got {}",
+                    expected, got
+                )
             }
             Error::InvalidUnicodeEscape => write!(f, "invalid unicode escape"),
         }

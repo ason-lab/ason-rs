@@ -78,8 +78,14 @@ fn cross_trailing_fields_dropped_single() {
 }
 
 // ============================================================================
-// Dimension 2: Trailing field is complex (array, map)
+// Dimension 2: Trailing field is complex (array, entry list)
 // ============================================================================
+
+#[derive(Debug, Serialize)]
+struct MetaEntry {
+    key: String,
+    value: i64,
+}
 
 #[derive(Debug, Serialize)]
 struct RichProfile {
@@ -87,7 +93,7 @@ struct RichProfile {
     name: String,
     tags: Vec<String>,
     scores: Vec<i64>,
-    meta: std::collections::HashMap<String, i64>,
+    meta: Vec<MetaEntry>,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -97,16 +103,22 @@ struct ThinProfile {
 }
 
 #[test]
-fn cross_skip_trailing_array_and_map() {
-    let mut meta = std::collections::HashMap::new();
-    meta.insert("level".into(), 5);
-    meta.insert("xp".into(), 1200);
+fn cross_skip_trailing_array_and_entry_list() {
     let src = RichProfile {
         id: 1,
         name: "Alice".into(),
         tags: vec!["go".into(), "rust".into()],
         scores: vec![90, 85, 92],
-        meta,
+        meta: vec![
+            MetaEntry {
+                key: "level".into(),
+                value: 5,
+            },
+            MetaEntry {
+                key: "xp".into(),
+                value: 1200,
+            },
+        ],
     };
     let data = encode(&src).unwrap();
     let dst: ThinProfile = decode(&data).unwrap();
@@ -676,37 +688,43 @@ fn cross_empty_string_fields() {
 }
 
 // ============================================================================
-// Dimension 16: Skip trailing map field
+// Dimension 16: Skip trailing entry list field
 // ============================================================================
 
 #[derive(Debug, Serialize)]
-struct SrcWithMap {
+struct SrcWithEntries {
     id: i64,
     name: String,
-    meta: std::collections::HashMap<String, i64>,
+    meta: Vec<MetaEntry>,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
-struct DstNoMap {
+struct DstNoEntries {
     id: i64,
     name: String,
 }
 
 #[test]
-fn cross_skip_trailing_map_field() {
-    let mut meta = std::collections::HashMap::new();
-    meta.insert("age".into(), 30);
-    meta.insert("score".into(), 95);
-    let src = SrcWithMap {
+fn cross_skip_trailing_entry_list_field() {
+    let src = SrcWithEntries {
         id: 1,
         name: "Alice".into(),
-        meta,
+        meta: vec![
+            MetaEntry {
+                key: "age".into(),
+                value: 30,
+            },
+            MetaEntry {
+                key: "score".into(),
+                value: 95,
+            },
+        ],
     };
     let data = encode(&src).unwrap();
-    let dst: DstNoMap = decode(&data).unwrap();
+    let dst: DstNoEntries = decode(&data).unwrap();
     assert_eq!(
         dst,
-        DstNoMap {
+        DstNoEntries {
             id: 1,
             name: "Alice".into()
         }

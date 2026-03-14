@@ -1,6 +1,5 @@
 use ason::{decode, decode_binary, encode, encode_binary, encode_typed};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 // ===========================================================================
 // Basic types (existing)
@@ -21,9 +20,21 @@ struct Employee {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
-struct WithMap {
+struct AttrEntry {
+    key: String,
+    value: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+struct StringEntry {
+    key: String,
+    value: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+struct WithEntries {
     name: String,
-    attrs: HashMap<String, i64>,
+    attrs: Vec<AttrEntry>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -192,7 +203,7 @@ struct Drawing {
 }
 
 // ===========================================================================
-// Large config-like struct with maps and optional fields
+// Large config-like struct with entry lists and optional fields
 // ===========================================================================
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -226,7 +237,7 @@ struct ServiceConfig {
     cache: CacheConfig,
     log: LogConfig,
     features: Vec<String>,
-    env: HashMap<String, String>,
+    env: Vec<StringEntry>,
 }
 
 fn main() {
@@ -237,14 +248,14 @@ fn main() {
     // -----------------------------------------------------------------------
     println!("1. Nested struct:");
     let emp: Employee =
-        decode("{id,name,dept:{title},skills,active}:(1,Alice,(Manager),[rust],true)").unwrap();
+        decode("{id,name,dept@{title},skills@[],active}:(1,Alice,(Manager),[rust],true)").unwrap();
     println!("   {:?}\n", emp);
 
     // -----------------------------------------------------------------------
     // 2. Vec with nested structs (existing)
     // -----------------------------------------------------------------------
     println!("2. Vec with nested structs:");
-    let input = "[{id:int,name:str,dept:{title:str},skills:[str],active:bool}]:
+    let input = "[{id@int,name@str,dept@{title@str},skills@[str],active@bool}]:
   (1, Alice, (Manager), [Rust, Go], true),
   (2, Bob, (Engineer), [Python], false),
   (3, \"Carol Smith\", (Director), [Leadership, Strategy], true)";
@@ -254,11 +265,11 @@ fn main() {
     }
 
     // -----------------------------------------------------------------------
-    // 3. Map/Dict field (existing)
+    // 3. Entry-list field
     // -----------------------------------------------------------------------
-    println!("\n3. Map/Dict field:");
-    let input = "{name,attrs}:(Alice,<age:30,score:95>)";
-    let item: WithMap = decode(input).unwrap();
+    println!("\n3. Entry-list field:");
+    let input = "{name,attrs@[{key,value}]}:(Alice,[(age,30),(score,95)])";
+    let item: WithEntries = decode(input).unwrap();
     println!("   {:?}", item);
 
     // -----------------------------------------------------------------------
@@ -641,16 +652,23 @@ fn main() {
     );
 
     // -----------------------------------------------------------------------
-    // 12. Service config with maps + optional + nested
+    // 12. Service config with entry lists + optional + nested
     // -----------------------------------------------------------------------
-    println!("\n12. Complex config struct (nested + map + optional):");
-    let mut env = HashMap::new();
-    env.insert("RUST_LOG".into(), "debug".into());
-    env.insert(
-        "DATABASE_URL".into(),
-        "postgres://localhost:5432/mydb".into(),
-    );
-    env.insert("SECRET_KEY".into(), "abc123!@#".into());
+    println!("\n12. Complex config struct (nested + entry-list + optional):");
+    let env = vec![
+        StringEntry {
+            key: "RUST_LOG".into(),
+            value: "debug".into(),
+        },
+        StringEntry {
+            key: "DATABASE_URL".into(),
+            value: "postgres://localhost:5432/mydb".into(),
+        },
+        StringEntry {
+            key: "SECRET_KEY".into(),
+            value: "abc123!@#".into(),
+        },
+    ];
 
     let config = ServiceConfig {
         name: "my-service".into(),
@@ -786,7 +804,7 @@ fn main() {
     // 14. Deserialize from ASON with deeply nested schema type hints
     // -----------------------------------------------------------------------
     println!("\n14. Deserialize with nested schema type hints:");
-    let input = "{name:str,code:str,population:int,gdp_trillion:float,regions:[{name:str,cities:[{name:str,population:int,area_km2:float,districts:[{name:str,population:int,streets:[{name:str,length_km:float,buildings:[{name:str,floors:int,residential:bool,height_m:float}]}]}]}]}]}:(TestLand,TL,1000000,0.5,[(TestRegion,[(TestCity,500000,100.0,[(Central,250000,[(Main St,2.5,[(HQ,10,false,45.0)])])])])])";
+    let input = "{name@str,code@str,population@int,gdp_trillion@float,regions@[{name@str,cities@[{name@str,population@int,area_km2@float,districts@[{name@str,population@int,streets@[{name@str,length_km@float,buildings@[{name@str,floors@int,residential@bool,height_m@float}]}]}]}]}]}:(TestLand,TL,1000000,0.5,[(TestRegion,[(TestCity,500000,100.0,[(Central,250000,[(Main St,2.5,[(HQ,10,false,45.0)])])])])])";
     let c: Country = decode(input).unwrap();
     assert_eq!(c.name, "TestLand");
     assert_eq!(
@@ -923,7 +941,7 @@ fn main() {
 [{id,name,active}]:
   /* row 1 */ (1, Alice, true)";
     let emp: Employee =
-        decode("{id,name,dept:{title},skills,active}:/* inline */ (1,Alice,(HR),[rust],true)")
+        decode("{id,name,dept@{title},skills@[],active}:/* inline */ (1,Alice,(HR),[rust],true)")
             .unwrap();
     println!("   with inline comment: {:?}", emp);
     println!("   ✓ comment parsing OK");

@@ -20,7 +20,7 @@ ASON 只写一次 Schema，后续每行数据按位置保存：
 ```
 
 ```text
-[{id:int,name:str,active:bool}]:(1,Alice,true),(2,Bob,false)
+[{id@int,name@str,active@bool}]:(1,Alice,true),(2,Bob,false)
 ```
 
 这让重复记录更短，更适合传输、存储或送入模型。
@@ -31,7 +31,7 @@ ASON 只写一次 Schema，后续每行数据按位置保存：
 - 当前 API 是 `encode` / `decode`，不再是旧文档里的 `to_string` / `from_str`
 - 支持可选的带类型 Schema 输出
 - 支持更易读的 pretty 文本和二进制格式
-- 适用于结构体、向量、Option、Map、枚举和嵌套数据
+- 适用于结构体、向量、Option、枚举、嵌套数据，以及基于条目列表的键值集合
 
 ## 安装
 
@@ -62,7 +62,7 @@ fn main() -> ason::Result<()> {
     let decoded: User = decode(&text)?;
 
     assert_eq!(decoded.id, 1);
-    assert_eq!(typed, "{id:int,name:str,active:bool}:(1,Alice,true)");
+    assert_eq!(typed, "{id@int,name@str,active@bool}:(1,Alice,true)");
     Ok(())
 }
 ```
@@ -116,19 +116,21 @@ cargo run --example bench
 
 ## Benchmark Snapshot
 
-在当前机器上通过下面命令实测：
+可以通过下面命令运行 benchmark 示例：
 
 ```bash
-CARGO_BUILD_RUSTC_WRAPPER='' CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=cc RUSTFLAGS='' cargo run --example bench --release
+cargo run --example bench --release
 ```
 
-关键结果：
+Rust 版 benchmark 现在和 Go 版保持同一种两行汇总样式：
 
-- 扁平 1,000 条记录：ASON 序列化 `57.46ms`，JSON `73.06ms`；反序列化 ASON `84.37ms`，JSON `111.17ms`
-- 扁平 10,000 条记录：ASON 序列化 `46.91ms`，JSON `57.75ms`；反序列化 ASON `72.26ms`，JSON `93.22ms`
-- 深层 100 条数据：ASON 序列化 `234.43ms`，JSON `252.71ms`；反序列化 ASON `211.58ms`，JSON `313.06ms`
-- 1,000 条记录吞吐总结：ASON 文本序列化比 JSON 快 `1.12x`，反序列化快 `1.34x`
-- 1,000 条扁平记录二进制总结：BIN 序列化 `2.13ms`，JSON `12.79ms`；BIN 反序列化 `5.86ms`，JSON `19.87ms`
+```text
+Flat struct × 1000 (8 fields, vec)
+  Serialize:   JSON   411.05ms /   121675 B | ASON   175.25ms (2.3x) /    56718 B (46.6%) | BIN    41.32ms (9.9x) /    74454 B (61.2%)
+  Deserialize: JSON   287.06ms | ASON   195.57ms (1.5x) | BIN    64.62ms (4.4x)
+```
+
+其中 `ASON` / `BIN` 后面的倍率都是相对 JSON 计算的，大小百分比表示“占 JSON 的剩余比例”。
 
 ## 许可证
 

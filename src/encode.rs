@@ -184,7 +184,7 @@ pub fn encode<T: Serialize>(value: &T) -> Result<String> {
 
 /// Serialize a single struct to ASON string with type-annotated schema.
 ///
-/// Output example: `{id:int,name:str,active:bool}:(1,Alice,true)`
+/// Output example: `{id@int,name@str,active@bool}:(1,Alice,true)`
 pub fn encode_typed<T: Serialize>(value: &T) -> Result<String> {
     let mut serializer = Encoder {
         buf: Vec::with_capacity(256),
@@ -221,7 +221,7 @@ impl<'a> ser::Serializer for &'a mut Encoder {
     type SerializeTuple = TupleEncoder<'a>;
     type SerializeTupleStruct = TupleEncoder<'a>;
     type SerializeTupleVariant = TupleEncoder<'a>;
-    type SerializeMap = MapEncoder<'a>;
+    type SerializeMap = ser::Impossible<(), Error>;
     type SerializeStruct = StructEncoder<'a>;
     type SerializeStructVariant = StructEncoder<'a>;
 
@@ -452,16 +452,11 @@ impl<'a> ser::Serializer for &'a mut Encoder {
         })
     }
 
-    fn serialize_map(self, _len: Option<usize>) -> Result<MapEncoder<'a>> {
-        self.push_separator();
-        if self.current_type_hint.is_none() && self.typed {
-            self.current_type_hint = Some("map");
-        }
-        self.buf.push(b'<');
-        Ok(MapEncoder {
-            ser: self,
-            first: true,
-        })
+    fn serialize_map(self, _len: Option<usize>) -> Result<ser::Impossible<(), Error>> {
+        Err(Error::Message(
+            "map fields are no longer supported; model key-value data as a slice of entry structs"
+                .into(),
+        ))
     }
 
     fn serialize_struct(self, _name: &'static str, len: usize) -> Result<StructEncoder<'a>> {
@@ -563,12 +558,12 @@ impl<'a> ser::SerializeSeq for SeqEncoder<'a> {
                         .and_then(|schemas| schemas.get(i))
                         .and_then(|s| s.as_ref());
                     if let Some(schema) = has_nested {
-                        out.push(b':');
+                        out.push(b'@');
                         out.extend_from_slice(schema);
                     } else if self.ser.typed {
                         if let Some(ref field_types) = self.ser.top_seq_field_types {
                             if let Some(Some(type_hint)) = field_types.get(i) {
-                                out.push(b':');
+                                out.push(b'@');
                                 out.extend_from_slice(type_hint.as_bytes());
                             }
                         }
@@ -596,15 +591,16 @@ impl<'a> ser::SerializeSeq for SeqEncoder<'a> {
                 wrapped.extend_from_slice(&schema);
                 wrapped.push(b']');
                 self.ser.nested_schema = Some(wrapped);
-            } else if self.ser.typed {
-                // Bubble up type hint for primitive vec fields (e.g. Vec<bool> → [bool])
-                if let Some(hint) = self.ser.current_type_hint.take() {
-                    let mut wrapped = Vec::with_capacity(hint.len() + 2);
-                    wrapped.push(b'[');
-                    wrapped.extend_from_slice(hint.as_bytes());
-                    wrapped.push(b']');
-                    self.ser.nested_schema = Some(wrapped);
-                }
+            } else if let Some(hint) = self.ser.current_type_hint.take() {
+                // Primitive vec fields keep a structural scaffold even when
+                // scalar element types are optional.
+                let mut wrapped = Vec::with_capacity(hint.len() + 2);
+                wrapped.push(b'[');
+                wrapped.extend_from_slice(hint.as_bytes());
+                wrapped.push(b']');
+                self.ser.nested_schema = Some(wrapped);
+            } else {
+                self.ser.nested_schema = Some(b"[]".to_vec());
             }
         }
         self.ser.first = false;
@@ -674,44 +670,6 @@ impl<'a> ser::SerializeTupleVariant for TupleEncoder<'a> {
 }
 
 // ---------------------------------------------------------------------------
-// MapSerializer
-// ---------------------------------------------------------------------------
-
-pub struct MapEncoder<'a> {
-    ser: &'a mut Encoder,
-    first: bool,
-}
-
-impl<'a> ser::SerializeMap for MapEncoder<'a> {
-    type Ok = ();
-    type Error = Error;
-
-    fn serialize_key<T: ?Sized + Serialize>(&mut self, key: &T) -> Result<()> {
-        if !self.first {
-            self.ser.buf.push(b',');
-            self.ser.buf.push(b' ');
-        }
-        self.first = false;
-        self.ser.first = true;
-        key.serialize(&mut *self.ser)?;
-        self.ser.buf.push(b':');
-        Ok(())
-    }
-
-    fn serialize_value<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<()> {
-        self.ser.first = true;
-        value.serialize(&mut *self.ser)?;
-        Ok(())
-    }
-
-    fn end(self) -> Result<()> {
-        self.ser.buf.push(b'>');
-        self.ser.first = false;
-        Ok(())
-    }
-}
-
-// ---------------------------------------------------------------------------
 // StructSerializer
 // ---------------------------------------------------------------------------
 
@@ -775,11 +733,11 @@ impl<'a> ser::SerializeStruct for StructEncoder<'a> {
                 out.extend_from_slice(f.as_bytes());
                 // Nested schema takes priority over type hint
                 if let Some(Some(schema)) = self.field_schemas.get(i) {
-                    out.push(b':');
+                    out.push(b'@');
                     out.extend_from_slice(schema);
                 } else if self.ser.typed {
                     if let Some(type_hint) = self.field_types.get(i).and_then(|t| *t) {
-                        out.push(b':');
+                        out.push(b'@');
                         out.extend_from_slice(type_hint.as_bytes());
                     }
                 }
@@ -806,11 +764,11 @@ impl<'a> ser::SerializeStruct for StructEncoder<'a> {
                     }
                     schema.extend_from_slice(f.as_bytes());
                     if let Some(Some(nested)) = self.field_schemas.get(i) {
-                        schema.push(b':');
+                        schema.push(b'@');
                         schema.extend_from_slice(nested);
                     } else if self.ser.typed {
                         if let Some(type_hint) = self.field_types.get(i).and_then(|t| *t) {
-                            schema.push(b':');
+                            schema.push(b'@');
                             schema.extend_from_slice(type_hint.as_bytes());
                         }
                     }

@@ -3,13 +3,13 @@
 // ---------------------------------------------------------------------------
 //
 // Simple structures stay inline:
-//   {name:str, age:int}:(Alice, 30)
+//   {name@str, age@int}:(Alice, 30)
 //
 // Complex structures expand with 2-space indentation:
 //   {
-//     id:str,
-//     name:str,
-//     addr:{city:str, zip:int}
+//     id@str,
+//     name@str,
+//     addr@{city@str, zip@int}
 //   }:
 //     (E001, John, (NYC, 10001))
 
@@ -96,7 +96,10 @@ impl<'a> PrettyFmt<'a> {
         if self.pos >= self.src.len() {
             return;
         }
-        if self.src[self.pos] == b'[' && self.pos + 1 < self.src.len() && self.src[self.pos + 1] == b'{' {
+        if self.src[self.pos] == b'['
+            && self.pos + 1 < self.src.len()
+            && self.src[self.pos + 1] == b'{'
+        {
             self.write_array_top();
         } else if self.src[self.pos] == b'{' {
             self.write_object_top();

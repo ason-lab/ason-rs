@@ -88,7 +88,7 @@ struct MatrixUserWithNestedOptional {
 
 #[test]
 fn matrix_a2_typed_single_extra_field_dropped() {
-    let input = "{id:int,name:str,active:bool}:(42,Alice,true)";
+    let input = "{id@int,name@str,active@bool}:(42,Alice,true)";
     let dst: MatrixPerson = decode(input).unwrap();
     assert_eq!(
         dst,
@@ -101,7 +101,7 @@ fn matrix_a2_typed_single_extra_field_dropped() {
 
 #[test]
 fn matrix_a1_typed_single_exact_match() {
-    let input = "{id:int,name:str}:(42,Alice)";
+    let input = "{id@int,name@str}:(42,Alice)";
     let dst: MatrixPerson = decode(input).unwrap();
     assert_eq!(
         dst,
@@ -140,7 +140,7 @@ fn matrix_a2_untyped_single_extra_field_dropped() {
 
 #[test]
 fn matrix_a3_typed_single_target_extra_field_defaulted() {
-    let input = "{id:int,name:str}:(42,Alice)";
+    let input = "{id@int,name@str}:(42,Alice)";
     let dst: MatrixPersonWithActive = decode(input).unwrap();
     assert_eq!(
         dst,
@@ -168,7 +168,7 @@ fn matrix_a3_untyped_single_target_extra_field_defaulted() {
 
 #[test]
 fn matrix_a4_typed_single_field_reorder() {
-    let input = "{active:bool,id:int,name:str}:(true,42,Alice)";
+    let input = "{active@bool,id@int,name@str}:(true,42,Alice)";
     let dst: MatrixPersonWithActive = decode(input).unwrap();
     assert_eq!(
         dst,
@@ -196,7 +196,7 @@ fn matrix_a4_untyped_single_field_reorder() {
 
 #[test]
 fn matrix_a5_typed_vec_extra_field_dropped() {
-    let input = "[{id:int,name:str,active:bool}]:(42,Alice,true),(7,Bob,false)";
+    let input = "[{id@int,name@str,active@bool}]:(42,Alice,true),(7,Bob,false)";
     let dst: Vec<MatrixPerson> = decode(input).unwrap();
     assert_eq!(
         dst,
@@ -234,7 +234,8 @@ fn matrix_a5_untyped_vec_extra_field_dropped() {
 
 #[test]
 fn matrix_n1_typed_nested_extra_fields_dropped() {
-    let input = "{name:str,inner:{x:int,y:int,z:float,w:bool},flag:bool}:(test,(10,20,3.14,true),true)";
+    let input =
+        "{name@str,inner@{x@int,y@int,z@float,w@bool},flag@bool}:(test,(10,20,3.14,true),true)";
     let dst: MatrixOuterThin = decode(input).unwrap();
     assert_eq!(
         dst,
@@ -247,7 +248,7 @@ fn matrix_n1_typed_nested_extra_fields_dropped() {
 
 #[test]
 fn matrix_n1_untyped_nested_extra_fields_dropped() {
-    let input = "{name,inner:{x,y,z,w},flag}:(test,(10,20,3.14,true),true)";
+    let input = "{name,inner@{x,y,z,w},flag}:(test,(10,20,3.14,true),true)";
     let dst: MatrixOuterThin = decode(input).unwrap();
     assert_eq!(
         dst,
@@ -260,7 +261,7 @@ fn matrix_n1_untyped_nested_extra_fields_dropped() {
 
 #[test]
 fn matrix_n2_typed_nested_vec_extra_fields_dropped() {
-    let input = "[{name:str,tasks:[{title:str,done:bool,priority:int,weight:float}]}]:(Alpha,[(Design,true,1,0.5),(Code,false,2,0.8)]),(Beta,[(Test,false,3,1.0)])";
+    let input = "[{name@str,tasks@[{title@str,done@bool,priority@int,weight@float}]}]:(Alpha,[(Design,true,1,0.5),(Code,false,2,0.8)]),(Beta,[(Test,false,3,1.0)])";
     let dst: Vec<MatrixProjectThin> = decode(input).unwrap();
     assert_eq!(dst.len(), 2);
     assert_eq!(dst[0].name, "Alpha");
@@ -278,7 +279,7 @@ fn matrix_n2_typed_nested_vec_extra_fields_dropped() {
 
 #[test]
 fn matrix_n2_untyped_nested_vec_extra_fields_dropped() {
-    let input = "[{name,tasks:[{title,done,priority,weight}]}]:(Alpha,[(Design,true,1,0.5),(Code,false,2,0.8)]),(Beta,[(Test,false,3,1.0)])";
+    let input = "[{name,tasks@[{title,done,priority,weight}]}]:(Alpha,[(Design,true,1,0.5),(Code,false,2,0.8)]),(Beta,[(Test,false,3,1.0)])";
     let dst: Vec<MatrixProjectThin> = decode(input).unwrap();
     assert_eq!(dst.len(), 2);
     assert_eq!(dst[0].tasks[1].title, "Code");
@@ -287,7 +288,7 @@ fn matrix_n2_untyped_nested_vec_extra_fields_dropped() {
 
 #[test]
 fn matrix_o1_typed_optional_skip_trailing() {
-    let input = "[{id:int,label:str?,score:float?,flag:bool}]:(1,hello,95.5,true),(2,,,false)";
+    let input = "[{id@int,label@str?,score@float?,flag@bool}]:(1,hello,95.5,true),(2,,,false)";
     let dst: Vec<MatrixDstFewerOptionals> = decode(input).unwrap();
     assert_eq!(
         dst,
@@ -296,17 +297,14 @@ fn matrix_o1_typed_optional_skip_trailing() {
                 id: 1,
                 label: Some("hello".into()),
             },
-            MatrixDstFewerOptionals {
-                id: 2,
-                label: None,
-            },
+            MatrixDstFewerOptionals { id: 2, label: None },
         ]
     );
 }
 
 #[test]
 fn matrix_a6_typed_vec_target_extra_field_defaulted() {
-    let input = "[{id:int,name:str}]:(42,Alice),(7,Bob)";
+    let input = "[{id@int,name@str}]:(42,Alice),(7,Bob)";
     let dst: Vec<MatrixPersonWithActive> = decode(input).unwrap();
     assert_eq!(
         dst,
@@ -348,7 +346,7 @@ fn matrix_a6_untyped_vec_target_extra_field_defaulted() {
 
 #[test]
 fn matrix_n3_typed_deep_nested_extra_fields_dropped() {
-    let input = "{id:int,child:{name:str,sub:{a:int,b:str,c:bool},code:int,tags:[str]},extra:str}:(7,(leaf,(11,hello,true),99,[x,y]),tail)";
+    let input = "{id@int,child@{name@str,sub@{a@int,b@str,c@bool},code@int,tags@[str]},extra@str}:(7,(leaf,(11,hello,true),99,[x,y]),tail)";
     let dst: MatrixL1Thin = decode(input).unwrap();
     assert_eq!(
         dst,
@@ -364,7 +362,8 @@ fn matrix_n3_typed_deep_nested_extra_fields_dropped() {
 
 #[test]
 fn matrix_n3_untyped_deep_nested_extra_fields_dropped() {
-    let input = "{id,child:{name,sub:{a,b,c},code,tags},extra}:(7,(leaf,(11,hello,true),99,[x,y]),tail)";
+    let input =
+        "{id,child@{name,sub@{a,b,c},code,tags},extra}:(7,(leaf,(11,hello,true),99,[x,y]),tail)";
     let dst: MatrixL1Thin = decode(input).unwrap();
     assert_eq!(
         dst,
@@ -389,43 +388,28 @@ fn matrix_o1_untyped_optional_skip_trailing() {
                 id: 1,
                 label: Some("hello".into()),
             },
-            MatrixDstFewerOptionals {
-                id: 2,
-                label: None,
-            },
+            MatrixDstFewerOptionals { id: 2, label: None },
         ]
     );
 }
 
 #[test]
 fn matrix_p1_typed_partial_overlap() {
-    let input = "{id:int,name:str,score:float,active:bool}:(42,Alice,9.5,true)";
+    let input = "{id@int,name@str,score@float,active@bool}:(42,Alice,9.5,true)";
     let dst: MatrixPersonScore = decode(input).unwrap();
-    assert_eq!(
-        dst,
-        MatrixPersonScore {
-            id: 42,
-            score: 9.5,
-        }
-    );
+    assert_eq!(dst, MatrixPersonScore { id: 42, score: 9.5 });
 }
 
 #[test]
 fn matrix_p1_untyped_partial_overlap() {
     let input = "{id,name,score,active}:(42,Alice,9.5,true)";
     let dst: MatrixPersonScore = decode(input).unwrap();
-    assert_eq!(
-        dst,
-        MatrixPersonScore {
-            id: 42,
-            score: 9.5,
-        }
-    );
+    assert_eq!(dst, MatrixPersonScore { id: 42, score: 9.5 });
 }
 
 #[test]
 fn matrix_p2_typed_no_overlap_defaults() {
-    let input = "{id:int,name:str}:(42,Alice)";
+    let input = "{id@int,name@str}:(42,Alice)";
     let dst: MatrixNoOverlap = decode(input).unwrap();
     assert_eq!(dst, MatrixNoOverlap::default());
 }
@@ -439,7 +423,7 @@ fn matrix_p2_untyped_no_overlap_defaults() {
 
 #[test]
 fn matrix_n4_typed_nested_optional_subset() {
-    let input = "[{id:int,profile:{name:str,nick:str?,score:float?},active:bool}]:(1,(Alice,ally,9.5),true),(2,(Bob,,),false)";
+    let input = "[{id@int,profile@{name@str,nick@str?,score@float?},active@bool}]:(1,(Alice,ally,9.5),true),(2,(Bob,,),false)";
     let dst: Vec<MatrixUserWithNestedOptional> = decode(input).unwrap();
     assert_eq!(
         dst,
@@ -464,7 +448,8 @@ fn matrix_n4_typed_nested_optional_subset() {
 
 #[test]
 fn matrix_n4_untyped_nested_optional_subset() {
-    let input = "[{id,profile:{name,nick,score},active}]:(1,(Alice,ally,9.5),true),(2,(Bob,,),false)";
+    let input =
+        "[{id,profile@{name,nick,score},active}]:(1,(Alice,ally,9.5),true),(2,(Bob,,),false)";
     let dst: Vec<MatrixUserWithNestedOptional> = decode(input).unwrap();
     assert_eq!(
         dst,
