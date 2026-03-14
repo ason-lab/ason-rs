@@ -2,6 +2,15 @@ use crate::error::{Error, Result};
 use crate::simd;
 use serde::Deserialize;
 use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+
+type CachedSchemaSpans = Arc<[(u32, u32)]>;
+
+fn schema_cache() -> &'static Mutex<HashMap<Vec<u8>, CachedSchemaSpans>> {
+    static CACHE: OnceLock<Mutex<HashMap<Vec<u8>, CachedSchemaSpans>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 pub struct Deserializer<'de> {
     input: &'de [u8],
@@ -43,6 +52,62 @@ pub fn decode<'a, T: Deserialize<'a>>(s: &'a str) -> Result<T> {
 }
 
 impl<'de> Deserializer<'de> {
+    #[inline(always)]
+    fn is_layout_byte(b: u8) -> bool {
+        matches!(b, b' ' | b'\t' | b'\n' | b'\r')
+    }
+
+    #[inline(always)]
+    fn is_value_delim(b: u8) -> bool {
+        matches!(b, b',' | b')' | b']' | b':')
+    }
+
+    #[inline(always)]
+    fn is_token_end_at(&self, pos: usize) -> bool {
+        pos >= self.input.len()
+            || Self::is_value_delim(self.input[pos])
+            || Self::is_layout_byte(self.input[pos])
+    }
+
+    #[inline(always)]
+    fn parse_bool_literal(&mut self) -> Option<bool> {
+        if self.pos + 4 <= self.input.len()
+            && &self.input[self.pos..self.pos + 4] == b"true"
+            && self.is_token_end_at(self.pos + 4)
+        {
+            self.pos += 4;
+            return Some(true);
+        }
+        if self.pos + 5 <= self.input.len()
+            && &self.input[self.pos..self.pos + 5] == b"false"
+            && self.is_token_end_at(self.pos + 5)
+        {
+            self.pos += 5;
+            return Some(false);
+        }
+        None
+    }
+
+    #[inline]
+    fn find_schema_end(&self, open_pos: usize) -> Result<usize> {
+        let mut brace_depth = 1u32;
+        let mut pos = open_pos + 1;
+        while pos < self.input.len() {
+            match self.input[pos] {
+                b'{' => brace_depth += 1,
+                b'}' => {
+                    brace_depth -= 1;
+                    if brace_depth == 0 {
+                        return Ok(pos);
+                    }
+                }
+                _ => {}
+            }
+            pos += 1;
+        }
+        Err(Error::Eof)
+    }
+
     #[inline(always)]
     fn peek_byte(&self) -> Result<u8> {
         if self.pos < self.input.len() {
@@ -111,17 +176,31 @@ impl<'de> Deserializer<'de> {
     }
 
     fn parse_schema(&mut self) -> Result<SchemaFields<'de>> {
+        let open_pos = self.pos;
         if self.next_byte()? != b'{' {
             return Err(Error::ExpectedOpenBrace);
         }
-        let mut fields = Vec::new();
+        let schema_base = self.pos;
+        let schema_end = self.find_schema_end(open_pos)?;
+        let schema_key = &self.input[open_pos..=schema_end];
+
+        if let Some(spans) = schema_cache().lock().unwrap().get(schema_key).cloned() {
+            self.pos = schema_end + 1;
+            return Ok(SchemaFields::Cached {
+                input: self.input,
+                base: schema_base,
+                spans,
+            });
+        }
+
+        let mut spans = Vec::new();
         loop {
             self.skip_whitespace();
             if self.peek_byte()? == b'}' {
                 self.pos += 1;
                 break;
             }
-            if !fields.is_empty() {
+            if !spans.is_empty() {
                 if self.next_byte()? != b',' {
                     return Err(Error::ExpectedComma);
                 }
@@ -134,7 +213,7 @@ impl<'de> Deserializer<'de> {
                     _ => self.pos += 1,
                 }
             }
-            let name = unsafe { core::str::from_utf8_unchecked(&self.input[start..self.pos]) };
+            spans.push(((start - schema_base) as u32, (self.pos - start) as u32));
             self.skip_whitespace();
 
             // Skip optional @type hint or nested structural scaffold.
@@ -158,10 +237,18 @@ impl<'de> Deserializer<'de> {
                     "legacy ':' field annotations are not supported; use '@'".into(),
                 ));
             }
-
-            fields.push(name);
         }
-        Ok(SchemaFields::Parsed(fields))
+
+        let spans: CachedSchemaSpans = spans.into();
+        schema_cache()
+            .lock()
+            .unwrap()
+            .insert(schema_key.to_vec(), spans.clone());
+        Ok(SchemaFields::Cached {
+            input: self.input,
+            base: schema_base,
+            spans,
+        })
     }
 
     #[inline]
@@ -260,8 +347,12 @@ impl<'de> Deserializer<'de> {
                 _ => self.pos += 1,
             }
         }
-        let raw = unsafe { core::str::from_utf8_unchecked(&self.input[start..self.pos]) };
-        Ok((raw.trim(), has_escape))
+        let mut end = self.pos;
+        while end > start && Self::is_layout_byte(self.input[end - 1]) {
+            end -= 1;
+        }
+        let raw = unsafe { core::str::from_utf8_unchecked(&self.input[start..end]) };
+        Ok((raw, has_escape))
     }
 
     /// Parse a quoted string. Zerocopy when no escapes; allocates only when escapes present.
@@ -530,7 +621,11 @@ impl<'de> Deserializer<'de> {
 }
 
 enum SchemaFields<'de> {
-    Parsed(Vec<&'de str>),
+    Cached {
+        input: &'de [u8],
+        base: usize,
+        spans: CachedSchemaSpans,
+    },
     Static(&'static [&'static str]),
 }
 
@@ -551,7 +646,7 @@ impl<'de> SchemaFields<'de> {
     #[inline(always)]
     fn len(&self) -> usize {
         match self {
-            Self::Parsed(fields) => fields.len(),
+            Self::Cached { spans, .. } => spans.len(),
             Self::Static(fields) => fields.len(),
         }
     }
@@ -559,7 +654,12 @@ impl<'de> SchemaFields<'de> {
     #[inline(always)]
     fn name_at(&self, index: usize) -> &'de str {
         match self {
-            Self::Parsed(fields) => fields[index],
+            Self::Cached { input, base, spans } => {
+                let (start, len) = spans[index];
+                let start = *base + start as usize;
+                let end = start + len as usize;
+                unsafe { core::str::from_utf8_unchecked(&input[start..end]) }
+            }
             Self::Static(fields) => unsafe {
                 core::mem::transmute::<&str, &'de str>(fields[index])
             },
@@ -569,9 +669,9 @@ impl<'de> SchemaFields<'de> {
     #[inline(always)]
     fn cache_key(&self) -> SchemaFieldsKey {
         match self {
-            Self::Parsed(fields) => SchemaFieldsKey {
-                ptr: fields.as_ptr() as usize,
-                len: fields.len(),
+            Self::Cached { spans, .. } => SchemaFieldsKey {
+                ptr: spans.as_ptr() as usize,
+                len: spans.len(),
             },
             Self::Static(fields) => SchemaFieldsKey {
                 ptr: fields.as_ptr() as usize,
@@ -594,7 +694,7 @@ impl<'de> SchemaFields<'de> {
     #[inline]
     fn contains_name(&self, target: &str) -> bool {
         match self {
-            Self::Parsed(fields) => fields.iter().any(|field| *field == target),
+            Self::Cached { .. } => (0..self.len()).any(|index| self.name_at(index) == target),
             Self::Static(fields) => fields.iter().any(|field| *field == target),
         }
     }
@@ -697,22 +797,9 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
                 // values as Bool, but unquoted strings like "test" or "foo"
                 // also start with these chars. Verify it's actually a bool
                 // keyword before committing; otherwise treat as string.
-                let is_true = self.pos + 4 <= self.input.len()
-                    && &self.input[self.pos..self.pos + 4] == b"true"
-                    && (self.pos + 4 >= self.input.len()
-                        || matches!(
-                            self.input[self.pos + 4],
-                            b',' | b')' | b']' | b':' | b' ' | b'\t' | b'\n' | b'\r'
-                        ));
-                let is_false = !is_true
-                    && self.pos + 5 <= self.input.len()
-                    && &self.input[self.pos..self.pos + 5] == b"false"
-                    && (self.pos + 5 >= self.input.len()
-                        || matches!(
-                            self.input[self.pos + 5],
-                            b',' | b')' | b']' | b':' | b' ' | b'\t' | b'\n' | b'\r'
-                        ));
-                if is_true || is_false {
+                let start = self.pos;
+                if self.parse_bool_literal().is_some() {
+                    self.pos = start;
                     self.deserialize_bool(visitor)
                 } else {
                     // Not a real bool — fall back to string
@@ -765,27 +852,8 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     #[inline]
     fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
         self.skip_layout();
-        if self.pos + 4 <= self.input.len() && &self.input[self.pos..self.pos + 4] == b"true" {
-            if self.pos + 4 >= self.input.len()
-                || matches!(
-                    self.input[self.pos + 4],
-                    b',' | b')' | b']' | b':' | b' ' | b'\t' | b'\n' | b'\r'
-                )
-            {
-                self.pos += 4;
-                return visitor.visit_bool(true);
-            }
-        }
-        if self.pos + 5 <= self.input.len() && &self.input[self.pos..self.pos + 5] == b"false" {
-            if self.pos + 5 >= self.input.len()
-                || matches!(
-                    self.input[self.pos + 5],
-                    b',' | b')' | b']' | b':' | b' ' | b'\t' | b'\n' | b'\r'
-                )
-            {
-                self.pos += 5;
-                return visitor.visit_bool(false);
-            }
+        if let Some(value) = self.parse_bool_literal() {
+            return visitor.visit_bool(value);
         }
         Err(Error::InvalidBool)
     }
