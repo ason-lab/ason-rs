@@ -230,7 +230,7 @@ pub use imp::*;
 // ============================================================================
 
 /// SIMD-accelerated check: does `s` contain any byte that needs ASON quoting?
-/// Checks for: control chars (<=0x1f), comma, parens, brackets, double-quote, backslash.
+/// Checks for: control chars (<=0x1f), comma, at-sign, parens, brackets, double-quote, backslash.
 ///
 /// Returns `true` if any special byte is found.
 #[inline]
@@ -241,6 +241,7 @@ pub fn simd_has_special_chars(bytes: &[u8]) -> bool {
     unsafe {
         let v_1f = splat(0x1f);
         let v_comma = splat(b',');
+        let v_at = splat(b'@');
         let v_lparen = splat(b'(');
         let v_rparen = splat(b')');
         let v_lbracket = splat(b'[');
@@ -252,7 +253,7 @@ pub fn simd_has_special_chars(bytes: &[u8]) -> bool {
             let chunk = load(bytes.as_ptr().add(i));
             let mask = movemask(or(
                 or(
-                    or(cmple(chunk, v_1f), cmpeq(chunk, v_comma)),
+                    or(cmple(chunk, v_1f), or(cmpeq(chunk, v_comma), cmpeq(chunk, v_at))),
                     or(cmpeq(chunk, v_lparen), cmpeq(chunk, v_rparen)),
                 ),
                 or(
@@ -276,6 +277,7 @@ pub fn simd_has_special_chars(bytes: &[u8]) -> bool {
             j += 1;
         }
         t[b',' as usize] = true;
+        t[b'@' as usize] = true;
         t[b'(' as usize] = true;
         t[b')' as usize] = true;
         t[b'[' as usize] = true;
@@ -621,6 +623,7 @@ mod tests {
     fn test_simd_has_special_chars() {
         assert!(!simd_has_special_chars(b"hello world"));
         assert!(simd_has_special_chars(b"hello,world"));
+        assert!(simd_has_special_chars(b"hello@world"));
         assert!(simd_has_special_chars(b"hello(world"));
         assert!(simd_has_special_chars(b"hello)world"));
         assert!(simd_has_special_chars(b"hello[world"));

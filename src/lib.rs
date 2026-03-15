@@ -167,6 +167,34 @@ mod tests {
     }
 
     #[test]
+    fn test_at_string_roundtrip_across_apis() {
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct Note {
+            text: String,
+        }
+        let note = Note {
+            text: "@Alice".into(),
+        };
+
+        let untyped = encode(&note).unwrap();
+        assert_eq!(untyped, r#"{text}:("@Alice")"#);
+        assert_eq!(decode::<Note>(&untyped).unwrap(), note);
+
+        let typed = encode_typed(&note).unwrap();
+        assert_eq!(typed, r#"{text@str}:("@Alice")"#);
+        assert_eq!(decode::<Note>(&typed).unwrap(), note);
+
+        let pretty = encode_pretty(&note).unwrap();
+        assert_eq!(decode::<Note>(&pretty).unwrap(), note);
+
+        let pretty_typed = encode_pretty_typed(&note).unwrap();
+        assert_eq!(decode::<Note>(&pretty_typed).unwrap(), note);
+
+        let bin = encode_binary(&note).unwrap();
+        assert_eq!(decode_binary::<Note>(&bin).unwrap(), note);
+    }
+
+    #[test]
     fn test_trailing_comma() {
         let input = "[{id@int,name@str,active@bool}]:(1,Alice,true),(2,Bob,false),";
         let users: Vec<User> = decode(input).unwrap();
