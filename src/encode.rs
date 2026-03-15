@@ -203,6 +203,55 @@ pub fn encode_typed<T: Serialize>(value: &T) -> Result<String> {
     Ok(unsafe { String::from_utf8_unchecked(serializer.buf) })
 }
 
+fn schema_field_name_needs_quotes(name: &str) -> bool {
+    if name.is_empty() {
+        return true;
+    }
+    if name == "true" || name == "false" {
+        return true;
+    }
+    if name.starts_with(' ') || name.ends_with(' ') {
+        return true;
+    }
+    let mut could_be_number = true;
+    let num_start = if name.as_bytes()[0] == b'-' { 1 } else { 0 };
+    if num_start >= name.len() {
+        could_be_number = false;
+    }
+    for (idx, &b) in name.as_bytes().iter().enumerate() {
+        if b <= 0x20
+            || matches!(b, b',' | b'@' | b':' | b'{' | b'}' | b'[' | b']' | b'(' | b')' | b'"' | b'\\')
+        {
+            return true;
+        }
+        if could_be_number && idx >= num_start && !b.is_ascii_digit() && b != b'.' {
+            could_be_number = false;
+        }
+    }
+    could_be_number && name.len() > num_start
+}
+
+fn push_schema_field_name(buf: &mut Vec<u8>, name: &str) {
+    if !schema_field_name_needs_quotes(name) {
+        buf.extend_from_slice(name.as_bytes());
+        return;
+    }
+    buf.push(b'"');
+    for &b in name.as_bytes() {
+        match b {
+            b'"' => buf.extend_from_slice(br#"\""#),
+            b'\\' => buf.extend_from_slice(br#"\\"#),
+            b'\n' => buf.extend_from_slice(br#"\n"#),
+            b'\r' => buf.extend_from_slice(br#"\r"#),
+            b'\t' => buf.extend_from_slice(br#"\t"#),
+            0x08 => buf.extend_from_slice(br#"\b"#),
+            0x0c => buf.extend_from_slice(br#"\f"#),
+            _ => buf.push(b),
+        }
+    }
+    buf.push(b'"');
+}
+
 impl Encoder {
     #[inline(always)]
     fn push_separator(&mut self) {
@@ -749,7 +798,7 @@ impl<'a> ser::SerializeStruct for StructEncoder<'a> {
                 if i > 0 {
                     out.push(b',');
                 }
-                out.extend_from_slice(f.as_bytes());
+                push_schema_field_name(&mut out, f);
                 // Nested schema takes priority over type hint
                 if let Some(Some(schema)) = self.field_schemas.get(i) {
                     out.push(b'@');
@@ -781,7 +830,7 @@ impl<'a> ser::SerializeStruct for StructEncoder<'a> {
                     if i > 0 {
                         schema.push(b',');
                     }
-                    schema.extend_from_slice(f.as_bytes());
+                    push_schema_field_name(&mut schema, f);
                     if let Some(Some(nested)) = self.field_schemas.get(i) {
                         schema.push(b'@');
                         schema.extend_from_slice(nested);

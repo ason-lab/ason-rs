@@ -5,11 +5,11 @@ use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-type CachedSchemaSpans = Arc<[(u32, u32)]>;
+type CachedSchemaNames = Arc<[Box<str>]>;
 type MissingFields = Arc<[&'static str]>;
 
-fn schema_cache() -> &'static Mutex<HashMap<Vec<u8>, CachedSchemaSpans>> {
-    static CACHE: OnceLock<Mutex<HashMap<Vec<u8>, CachedSchemaSpans>>> = OnceLock::new();
+fn schema_cache() -> &'static Mutex<HashMap<Vec<u8>, CachedSchemaNames>> {
+    static CACHE: OnceLock<Mutex<HashMap<Vec<u8>, CachedSchemaNames>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -203,40 +203,48 @@ impl<'de> Deserializer<'de> {
         if self.next_byte()? != b'{' {
             return Err(Error::ExpectedOpenBrace);
         }
-        let schema_base = self.pos;
         let schema_end = self.find_schema_end(open_pos)?;
         let schema_key = &self.input[open_pos..=schema_end];
 
-        if let Some(spans) = schema_cache().lock().unwrap().get(schema_key).cloned() {
+        if let Some(names) = schema_cache().lock().unwrap().get(schema_key).cloned() {
             self.pos = schema_end + 1;
             return Ok(SchemaFields::Cached {
-                input: self.input,
-                base: schema_base,
-                spans,
+                names,
+                _marker: core::marker::PhantomData,
             });
         }
 
-        let mut spans = Vec::new();
+        let mut names = Vec::new();
         loop {
             self.skip_whitespace();
             if self.peek_byte()? == b'}' {
                 self.pos += 1;
                 break;
             }
-            if !spans.is_empty() {
+            if !names.is_empty() {
                 if self.next_byte()? != b',' {
                     return Err(Error::ExpectedComma);
                 }
                 self.skip_whitespace();
             }
-            let start = self.pos;
-            while self.pos < self.input.len() {
-                match self.input[self.pos] {
-                    b',' | b'}' | b'@' | b':' | b' ' | b'\t' => break,
-                    _ => self.pos += 1,
+            if self.peek_byte()? == b'"' {
+                let cow = self.parse_quoted_string_cow()?;
+                let name = match cow {
+                    CowStr::Borrowed(s) => s.to_owned().into_boxed_str(),
+                    CowStr::Owned(s) => s.into_boxed_str(),
+                };
+                names.push(name);
+            } else {
+                let start = self.pos;
+                while self.pos < self.input.len() {
+                    match self.input[self.pos] {
+                        b',' | b'}' | b'@' | b':' | b' ' | b'\t' => break,
+                        _ => self.pos += 1,
+                    }
                 }
+                let name = unsafe { core::str::from_utf8_unchecked(&self.input[start..self.pos]) };
+                names.push(name.to_owned().into_boxed_str());
             }
-            spans.push(((start - schema_base) as u32, (self.pos - start) as u32));
             self.skip_whitespace();
 
             // Skip optional @type hint or nested structural scaffold.
@@ -262,15 +270,14 @@ impl<'de> Deserializer<'de> {
             }
         }
 
-        let spans: CachedSchemaSpans = spans.into();
+        let names: CachedSchemaNames = names.into_boxed_slice().into();
         schema_cache()
             .lock()
             .unwrap()
-            .insert(schema_key.to_vec(), spans.clone());
+            .insert(schema_key.to_vec(), names.clone());
         Ok(SchemaFields::Cached {
-            input: self.input,
-            base: schema_base,
-            spans,
+            names,
+            _marker: core::marker::PhantomData,
         })
     }
 
@@ -707,9 +714,8 @@ impl<'de> Deserializer<'de> {
 
 enum SchemaFields<'de> {
     Cached {
-        input: &'de [u8],
-        base: usize,
-        spans: CachedSchemaSpans,
+        names: CachedSchemaNames,
+        _marker: core::marker::PhantomData<&'de ()>,
     },
     Static(&'static [&'static str]),
 }
@@ -731,7 +737,7 @@ impl<'de> SchemaFields<'de> {
     #[inline(always)]
     fn len(&self) -> usize {
         match self {
-            Self::Cached { spans, .. } => spans.len(),
+            Self::Cached { names, .. } => names.len(),
             Self::Static(fields) => fields.len(),
         }
     }
@@ -739,12 +745,9 @@ impl<'de> SchemaFields<'de> {
     #[inline(always)]
     fn name_at(&self, index: usize) -> &'de str {
         match self {
-            Self::Cached { input, base, spans } => {
-                let (start, len) = spans[index];
-                let start = *base + start as usize;
-                let end = start + len as usize;
-                unsafe { core::str::from_utf8_unchecked(&input[start..end]) }
-            }
+            Self::Cached { names, .. } => unsafe {
+                core::mem::transmute::<&str, &'de str>(&names[index])
+            },
             Self::Static(fields) => unsafe {
                 core::mem::transmute::<&str, &'de str>(fields[index])
             },
@@ -754,9 +757,9 @@ impl<'de> SchemaFields<'de> {
     #[inline(always)]
     fn cache_key(&self) -> SchemaFieldsKey {
         match self {
-            Self::Cached { spans, .. } => SchemaFieldsKey {
-                ptr: spans.as_ptr() as usize,
-                len: spans.len(),
+            Self::Cached { names, .. } => SchemaFieldsKey {
+                ptr: names.as_ptr() as usize,
+                len: names.len(),
             },
             Self::Static(fields) => SchemaFieldsKey {
                 ptr: fields.as_ptr() as usize,

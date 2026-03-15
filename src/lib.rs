@@ -240,6 +240,48 @@ mod tests {
     }
 
     #[test]
+    fn test_quoted_schema_field_names_across_apis() {
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct Weird {
+            #[serde(rename = "id uuid")]
+            id_uuid: i64,
+            #[serde(rename = "65")]
+            numeric: String,
+            #[serde(rename = "{}[]@\"")]
+            special: bool,
+        }
+
+        let value = Weird {
+            id_uuid: 1,
+            numeric: "Alice".into(),
+            special: true,
+        };
+
+        let untyped = encode(&value).unwrap();
+        assert_eq!(
+            untyped,
+            "{\"id uuid\",\"65\",\"{}[]@\\\"\"}:(1,Alice,true)"
+        );
+        assert_eq!(decode::<Weird>(&untyped).unwrap(), value);
+
+        let typed = encode_typed(&value).unwrap();
+        assert_eq!(
+            typed,
+            "{\"id uuid\"@int,\"65\"@str,\"{}[]@\\\"\"@bool}:(1,Alice,true)"
+        );
+        assert_eq!(decode::<Weird>(&typed).unwrap(), value);
+
+        let pretty_untyped = encode_pretty(&value).unwrap();
+        assert_eq!(decode::<Weird>(&pretty_untyped).unwrap(), value);
+
+        let pretty = encode_pretty_typed(&value).unwrap();
+        assert_eq!(decode::<Weird>(&pretty).unwrap(), value);
+
+        let bin = encode_binary(&value).unwrap();
+        assert_eq!(decode_binary::<Weird>(&bin).unwrap(), value);
+    }
+
+    #[test]
     fn test_annotated_nested_struct() {
         #[derive(Debug, Deserialize, PartialEq)]
         struct Dept {
